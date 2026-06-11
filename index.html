@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GameSight Predictor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="noise"></div>
+    <main class="page">
+      <header class="hero">
+        <p class="eyebrow">Experimental Match Intelligence</p>
+        <h1>Predict Your Next Clash</h1>
+        <p class="subtitle">
+          Blend form, scoring trends, and injuries into one fast match forecast.
+        </p>
+      </header>
+
+      <section class="panel input-panel" aria-label="Prediction input">
+        <div class="api-grid">
+          <div>
+            <label for="nationQuery">National Team</label>
+            <input id="nationQuery" type="text" value="France" placeholder="France" />
+          </div>
+          <div class="api-action-wrap">
+            <button id="loadApiBtn" class="predict-btn" type="button">Load Real Fixture</button>
+          </div>
+        </div>
+
+        <div class="api-grid api-grid-secondary">
+          <div>
+            <label for="fixtureSelect">Upcoming Fixtures</label>
+            <select id="fixtureSelect" disabled>
+              <option value="">Load a national team first</option>
+            </select>
+          </div>
+          <div>
+            <p id="apiStatus" class="api-status">Data source: TheSportsDB public API</p>
+          </div>
+        </div>
+
+        <div class="api-grid api-grid-secondary">
+          <div>
+            <label for="oddsApiKey">The Odds API Key</label>
+            <input id="oddsApiKey" type="password" placeholder="Paste your API key" />
+            <small>Get one from the-odds-api.com</small>
+          </div>
+          <div class="api-action-wrap">
+            <button id="loadOddsBtn" class="predict-btn" type="button">Load Betting Odds</button>
+          </div>
+        </div>
+
+        <div class="team-grid">
+          <div>
+            <label for="teamA">Home Team</label>
+            <input id="teamA" type="text" placeholder="Falcons FC" value="Falcons FC" />
+          </div>
+          <div>
+            <label for="teamB">Away Team</label>
+            <input id="teamB" type="text" placeholder="Storm United" value="Storm United" />
+          </div>
+        </div>
+
+        <div class="metrics-grid">
+          <div>
+            <label for="formA">Home Form (last 5)</label>
+            <input id="formA" type="number" min="0" max="15" value="11" />
+            <small>Points out of 15</small>
+          </div>
+          <div>
+            <label for="formB">Away Form (last 5)</label>
+            <input id="formB" type="number" min="0" max="15" value="8" />
+            <small>Points out of 15</small>
+          </div>
+          <div>
+            <label for="goalsA">Home Avg Goals</label>
+            <input id="goalsA" type="number" min="0" max="6" step="0.1" value="2.0" />
+            <small>Per game</small>
+          </div>
+          <div>
+            <label for="goalsB">Away Avg Goals</label>
+            <input id="goalsB" type="number" min="0" max="6" step="0.1" value="1.5" />
+            <small>Per game</small>
+          </div>
+          <div>
+            <label for="injuriesA">Home Injuries</label>
+            <input id="injuriesA" type="number" min="0" max="11" value="1" />
+            <small>Likely unavailable starters</small>
+          </div>
+          <div>
+            <label for="injuriesB">Away Injuries</label>
+            <input id="injuriesB" type="number" min="0" max="11" value="3" />
+            <small>Likely unavailable starters</small>
+          </div>
+        </div>
+
+        <button id="predictBtn" class="predict-btn">Run Prediction</button>
+      </section>
+
+      <section class="panel output-panel" aria-live="polite">
+        <div class="result-top">
+          <h2 id="fixtureTitle">Falcons FC vs Storm United</h2>
+          <p id="winnerText">Most likely winner: Falcons FC</p>
+        </div>
+
+        <div class="bars" role="img" aria-label="Win probability bars">
+          <div class="bar-row">
+            <span id="labelA">Falcons FC</span>
+            <div class="bar-track"><div id="barA" class="bar fill-home"></div></div>
+            <strong id="probA">49%</strong>
+          </div>
+          <div class="bar-row">
+            <span>Draw</span>
+            <div class="bar-track"><div id="barD" class="bar fill-draw"></div></div>
+            <strong id="probD">24%</strong>
+          </div>
+          <div class="bar-row">
+            <span id="labelB">Storm United</span>
+            <div class="bar-track"><div id="barB" class="bar fill-away"></div></div>
+            <strong id="probB">27%</strong>
+          </div>
+        </div>
+
+        <div class="stats-strip">
+          <article>
+            <h3>Confidence</h3>
+            <p id="confidence">Medium</p>
+          </article>
+          <article>
+            <h3>Expected Goals</h3>
+            <p><span id="xgA">1.86</span> - <span id="xgB">1.34</span></p>
+          </article>
+          <article>
+            <h3>Risk Flag</h3>
+            <p id="risk">Balanced</p>
+          </article>
+          <article>
+            <h3>Model Odds</h3>
+            <p class="odds-line">
+              <span id="oddsA">2.04</span>
+              <span>/</span>
+              <span id="oddsD">4.17</span>
+              <span>/</span>
+              <span id="oddsB">3.70</span>
+            </p>
+          </article>
+          <article>
+            <h3>Market Odds</h3>
+            <p class="odds-line">
+              <span id="marketOddsA">-</span>
+              <span>/</span>
+              <span id="marketOddsD">-</span>
+              <span>/</span>
+              <span id="marketOddsB">-</span>
+            </p>
+            <small id="marketMeta">Load a fixture and fetch betting odds.</small>
+          </article>
+          <article>
+            <h3>Expected Result</h3>
+            <p id="expectedResult">2 - 1 (Home Win)</p>
+            <small id="expectedReason">Calculated from form, goal rates, injuries, and home edge.</small>
+          </article>
+        </div>
+
+        <article class="insights">
+          <h3>Key Drivers</h3>
+          <ul id="insightList"></ul>
+        </article>
+      </section>
+
+      <section class="panel history-panel" aria-live="polite" aria-label="Match history">
+        <div class="result-top">
+          <h2>Form And Head-to-Head</h2>
+          <p id="historyStatus">Load a fixture to view recent form and H2H.</p>
+        </div>
+
+        <div class="history-grid">
+          <article class="history-card">
+            <h3 id="homeHistoryTitle">Last 10: Home Team</h3>
+            <div id="homeHistoryList" class="history-list"></div>
+          </article>
+
+          <article class="history-card">
+            <h3 id="awayHistoryTitle">Last 10: Away Team</h3>
+            <div id="awayHistoryList" class="history-list"></div>
+          </article>
+        </div>
+
+        <article class="history-card history-card-wide">
+          <h3 id="h2hTitle">Head-to-Head</h3>
+          <div id="h2hList" class="history-list"></div>
+        </article>
+      </section>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
+</html>
