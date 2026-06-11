@@ -617,13 +617,26 @@ async function refreshMatchHistory() {
 }
 
 function isLikelyNationalTeam(team, queryLower) {
-  const teamName = (team.strTeam || "").toLowerCase();
-  const league = (team.strLeague || "").toLowerCase();
-  const alternate = (team.strAlternate || "").toLowerCase();
-  const keywords = (team.strKeywords || "").toLowerCase();
+  const teamName = normalizeTeamName(team.strTeam || "");
+  const league = normalizeTeamName(team.strLeague || "");
+  const alternate = normalizeTeamName(team.strAlternate || "");
+  const keywords = normalizeTeamName(team.strKeywords || "");
+
+  const isIntlCompetition =
+    league.includes("world cup") ||
+    league.includes("international") ||
+    league.includes("nations league") ||
+    league.includes("qualifying") ||
+    league.includes("friendly") ||
+    league.includes("euro") ||
+    league.includes("copa") ||
+    league.includes("africa cup") ||
+    league.includes("asian cup") ||
+    league.includes("gold cup");
 
   return (
     teamName === queryLower ||
+    isIntlCompetition ||
     alternate.includes("national") ||
     league.includes("national") ||
     keywords.includes("national") ||
@@ -631,16 +644,57 @@ function isLikelyNationalTeam(team, queryLower) {
   );
 }
 
+function sanitizeNationalQuery(query) {
+  let cleaned = (query || "").trim().replace(/\s+/g, " ");
+
+  cleaned = cleaned
+    .split(/\bvs\b|\bv\b|\//i)
+    .map((part) => part.trim())
+    .filter(Boolean)[0] || cleaned;
+
+  cleaned = cleaned.replace(/national\s+team/gi, "").replace(/\bteam\b/gi, "").trim();
+  return cleaned;
+}
+
 async function findNationalTeam(query) {
-  const payload = await fetchSportsDb(`/searchteams.php?t=${encodeURIComponent(query)}`);
-  const teams = (payload.teams || []).filter((team) => team.strSport === "Soccer");
-  if (teams.length === 0) {
-    throw new Error("No soccer teams found for that search.");
+  const cleanedQuery = sanitizeNationalQuery(query);
+  const payload = await fetchSportsDb(`/searchteams.php?t=${encodeURIComponent(cleanedQuery)}`);
+  const allTeams = payload.teams || [];
+
+  if (allTeams.length === 0) {
+    throw new Error(`No teams found for "${cleanedQuery}". Try a country name like France or Mexico.`);
   }
 
-  const queryLower = query.trim().toLowerCase();
-  const preferred = teams.find((team) => isLikelyNationalTeam(team, queryLower));
-  return preferred || teams[0];
+  const soccerTeams = allTeams.filter((team) => {
+    const sport = String(team.strSport || "").toLowerCase();
+    return sport.includes("soccer") || sport.includes("football");
+  });
+  const candidates = soccerTeams.length > 0 ? soccerTeams : allTeams;
+
+  const queryLower = normalizeTeamName(cleanedQuery);
+
+  const exactNational = candidates.find(
+    (team) => normalizeTeamName(team.strTeam) === queryLower && isLikelyNationalTeam(team, queryLower)
+  );
+  if (exactNational) {
+    return exactNational;
+  }
+
+  const nationalMatch = candidates.find((team) => isLikelyNationalTeam(team, queryLower));
+  if (nationalMatch) {
+    return nationalMatch;
+  }
+
+  const fuzzy = candidates.find((team) => {
+    const name = normalizeTeamName(team.strTeam || "");
+    return name.includes(queryLower) || queryLower.includes(name);
+  });
+
+  if (fuzzy) {
+    return fuzzy;
+  }
+
+  throw new Error(`No national team matched "${cleanedQuery}". Try a country name only.`);
 }
 
 async function getRecentTeamMetrics(teamId) {
@@ -736,7 +790,8 @@ async function applyFixture(index) {
 }
 
 async function loadNationalFixtures() {
-  const query = fields.nationQuery.value.trim();
+  const originalQuery = fields.nationQuery.value.trim();
+  const query = sanitizeNationalQuery(originalQuery);
   if (!query) {
     setApiStatus("Enter a national team name first (example: France, Brazil, Japan).");
     return;
