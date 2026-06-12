@@ -96,12 +96,12 @@ async function fetchJson(url) {
         throw new Error(`Request failed (${response.status})`);
       }
 
-      const contentType = response.headers.get("content-type") || "";
-      if (!contentType.toLowerCase().includes("application/json")) {
+      const raw = await response.text();
+      try {
+        return JSON.parse(raw);
+      } catch (_error) {
         throw new Error("Unexpected response format from data provider.");
       }
-
-      return response.json();
     } catch (error) {
       lastError = error;
       if (attempt < retries) {
@@ -115,14 +115,44 @@ async function fetchJson(url) {
   throw normalizeFetchError(lastError);
 }
 
+async function fetchSportsDbViaProxy(fullUrl) {
+  const proxies = [
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(fullUrl)}`,
+    `https://corsproxy.io/?${encodeURIComponent(fullUrl)}`
+  ];
+
+  const errors = [];
+  for (const proxyUrl of proxies) {
+    try {
+      return await fetchJson(proxyUrl);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  throw errors[errors.length - 1] || new Error("CORS proxy fallback failed.");
+}
+
 async function fetchSportsDb(path) {
   const errors = [];
 
   for (const base of API_BASES) {
+    const fullUrl = `${base}${path}`;
+
     try {
-      return await fetchJson(`${base}${path}`);
+      return await fetchJson(fullUrl);
     } catch (error) {
       errors.push(error);
+
+      // On browser CORS failures, try trusted read-through proxies for public data endpoints.
+      const msg = String((error && error.message) || "").toLowerCase();
+      if (msg.includes("network/cors") || msg.includes("failed to fetch")) {
+        try {
+          return await fetchSportsDbViaProxy(fullUrl);
+        } catch (proxyError) {
+          errors.push(proxyError);
+        }
+      }
     }
   }
 
