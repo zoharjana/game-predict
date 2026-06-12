@@ -114,15 +114,7 @@ label {
   font-weight: 700;
 }
 
-input {
-  width: 100%;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  padding: 10px 12px;
-  color: var(--text-main);
-  background: rgba(8, 14, 19, 0.6);
-}
-
+input,
 select {
   width: 100%;
   border-radius: 10px;
@@ -132,19 +124,19 @@ select {
   background: rgba(8, 14, 19, 0.6);
 }
 
+small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
 .api-status {
   margin: 0;
   min-height: 42px;
   display: flex;
   align-items: center;
   color: var(--text-muted);
-}
-
-small {
-  display: block;
-  margin-top: 4px;
-  color: var(--text-muted);
-  font-size: 0.75rem;
 }
 
 .predict-btn {
@@ -227,7 +219,8 @@ small {
 }
 
 .stats-strip h3,
-.insights h3 {
+.insights h3,
+.history-card h3 {
   margin: 0;
   font-size: 0.85rem;
   letter-spacing: 0.08em;

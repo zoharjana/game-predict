@@ -1,72 +1,60 @@
-# Game Prediction Page
+# Game Prediction Page (React)
 
-A bold, single-page match prediction interface built with vanilla HTML, CSS, and JavaScript.
+A React + Vite match prediction interface with live national-team fixtures, market odds support, and history blocks.
 
 ## Features
 
-- Team-vs-team prediction input
+- Team-vs-team prediction inputs and model probabilities
+- Expected result scoreline from all tracked stats
 - Real fixture loading for national teams via TheSportsDB
-- Real bookmaker odds loading via The Odds API
-- Win/Draw/Win probability bars
-- Confidence and risk indicators
-- Expected goals estimate
-- Key-driver insights
+- Optional real bookmaker odds via The Odds API
+- Last games and head-to-head section
 - Responsive layout for desktop and mobile
 
-## Run locally
+## Tech Stack
 
-Open `index.html` directly in your browser, or use a lightweight local server.
+- React 18
+- Vite 5
+- GitHub Pages (via GitHub Actions)
 
-Example with Python:
+## Local Development
 
-```bash
-python -m http.server 5173
-```
+Install dependencies:
 
-Then open `http://localhost:5173`.
+npm install
 
-## Files
+Run locally on port 5173:
 
-- `index.html` - page structure
-- `styles.css` - visual design and responsive behavior
-- `script.js` - prediction model and UI updates
+npm run dev
 
-## Notes
+Production build test:
 
-The prediction model is heuristic-based (not ML-trained) and meant as a practical starting point you can tune with your own weighting logic or API data.
+npm run build
 
-## Real API Usage (National Teams)
+Preview production build:
 
-1. Enter a national team name in the `National Team` field (examples: France, Argentina, Japan).
-2. Click `Load Real Fixture`.
-3. Pick an upcoming fixture from the dropdown.
-4. The app auto-fills both teams and recent form/goals, then runs prediction.
+npm run preview
 
-Current source in this project:
+## Project Structure
 
-- TheSportsDB public API (`searchteams`, `eventsnext`, `eventslast` endpoints)
+- src/main.jsx: React entry point
+- src/App.jsx: App logic and UI
+- src/styles.css: App styling
+- vite.config.js: GitHub Pages base path config
+- .github/workflows/deploy-pages.yml: Pages deployment workflow
 
-Other strong APIs for production use:
+## APIs
 
-- API-Football (RapidAPI): broad coverage and good fixture depth for international competitions
-- football-data.org: official-style competition data with national team tournaments
-- Sportmonks Football API: detailed paid tier with deep historical and odds integrations
+Current fixture/history source:
 
-## Real Betting Odds Setup
+- TheSportsDB public API
 
-This project now fetches live `1X2` betting odds from bookmakers using The Odds API.
+Optional market odds source:
 
-1. Get an API key from `https://the-odds-api.com`.
-2. Load a real fixture in the app.
-3. Paste your key into `The Odds API Key`.
-4. Click `Load Betting Odds`.
+- The Odds API (requires key)
 
-The app will show:
+## GitHub Pages URL
 
-- Home / Draw / Away market odds (decimal)
-- Which bookmaker provided the displayed market
+This repository is configured for:
 
-Security note:
-
-- In this static demo, the API key is used in-browser.
-- For private production usage, move odds calls to a backend proxy so the key is not exposed client-side.
+https://zoharjana.github.io/game-predict/
