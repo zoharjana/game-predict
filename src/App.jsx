@@ -2,6 +2,10 @@ import React, { useMemo, useState } from "react";
 import "./styles.css";
 
 const FD_API_BASE = "https://api.football-data.org/v4";
+const SPORTSDB_BASES = [
+  "https://www.thesportsdb.com/api/v1/json/3",
+  "https://www.thesportsdb.com/api/v1/json/123"
+];
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 const FIFA_RANKING_API = "https://api.fifa.com/api/v3/fifarankings/rankings/live?gender=1&sportType=0&language=en";
 
@@ -193,6 +197,64 @@ async function fetchFD(path, apiKey) {
 
     throw normalizeFetchError(proxyErrors[proxyErrors.length - 1]);
   }
+}
+
+async function fetchSportsDb(path) {
+  const errors = [];
+
+  for (const base of SPORTSDB_BASES) {
+    const fullUrl = `${base}${path}`;
+    try {
+      return await fetchJson(fullUrl);
+    } catch (error) {
+      errors.push(error);
+      try {
+        return await fetchJsonViaProxies(fullUrl);
+      } catch (proxyError) {
+        errors.push(proxyError);
+      }
+    }
+  }
+
+  throw errors[errors.length - 1] || new Error("Could not load fallback match history.");
+}
+
+async function fetchTeamMatchesSportsDbByName(teamName) {
+  const query = sanitizeNationalQuery(teamName || "");
+  if (!query) {
+    return [];
+  }
+
+  const searchPayload = await fetchSportsDb(`/searchteams.php?t=${encodeURIComponent(query)}`);
+  const teams = searchPayload.teams || [];
+  if (teams.length === 0) {
+    return [];
+  }
+
+  const teamNorm = normalizeTeamName(query);
+  const soccerTeams = teams.filter((team) => {
+    const sport = String(team.strSport || "").toLowerCase();
+    return sport.includes("soccer") || sport.includes("football");
+  });
+  const candidates = soccerTeams.length > 0 ? soccerTeams : teams;
+  const selected =
+    candidates.find((team) => normalizeTeamName(team.strTeam || "") === teamNorm) ||
+    candidates.find((team) => normalizeTeamName(team.strTeam || "").includes(teamNorm)) ||
+    candidates[0];
+
+  if (!selected?.idTeam) {
+    return [];
+  }
+
+  const eventsPayload = await fetchSportsDb(`/eventslast.php?id=${encodeURIComponent(selected.idTeam)}`);
+  const rows = (eventsPayload.results || [])
+    .filter((event) => isOfficialCompetitionEvent(event))
+    .map((event) => normalizeMatchEvent(event, selected.idTeam))
+    .filter(Boolean)
+    .sort((a, b) => b.sortTs - a.sortTs)
+    .slice(0, 10);
+
+  return rows;
 }
 
 function formatDateLabel(value) {
@@ -658,6 +720,7 @@ const FD_COMPETITION_GROUPS = [
   ["PL", "BL1", "SA", "FL1", "PD"], // top 5 leagues
   ["CL", "ELC", "DED", "PPL"]      // cups + other leagues
 ];
+const FD_COMP_CODES = Array.from(new Set(FD_COMPETITION_GROUPS.flat()));
 
 async function findTeamFD(query, apiKey) {
   const queryNorm = normalizeTeamName(query);
@@ -718,19 +781,82 @@ async function findTeamFD(query, apiKey) {
   throw new Error(`No team found for "${query}". Try a full team or country name.`);
 }
 
-async function fetchTeamMatchesFD(teamId, apiKey) {
+async function fetchTeamMatchesFD(teamId, apiKey, teamName = "") {
   if (!teamId) {
     return [];
   }
 
-  const payload = await fetchFD(
-    `/teams/${encodeURIComponent(teamId)}/matches?status=FINISHED&limit=10`,
-    apiKey
-  );
+  const unique = new Map();
+  const teamIdStr = String(teamId);
+  const teamNorm = normalizeTeamName(teamName);
+  const today = new Date();
+  const dateTo = today.toISOString().slice(0, 10);
+  const from = new Date(today);
+  from.setFullYear(from.getFullYear() - 2);
+  const dateFrom = from.toISOString().slice(0, 10);
 
-  return (payload.matches || [])
-    .map((match) => normalizeFDMatch(match, teamId))
-    .filter(Boolean)
+  const addMatches = (matches) => {
+    (matches || []).forEach((match) => {
+      const homeId = String(match.homeTeam?.id || "");
+      const awayId = String(match.awayTeam?.id || "");
+      const homeNorm = normalizeTeamName(match.homeTeam?.name || "");
+      const awayNorm = normalizeTeamName(match.awayTeam?.name || "");
+      const byId = homeId === teamIdStr || awayId === teamIdStr;
+      const byName = teamNorm && (homeNorm === teamNorm || awayNorm === teamNorm || homeNorm.includes(teamNorm) || awayNorm.includes(teamNorm));
+      if (!byId && !byName) {
+        return;
+      }
+      const row = normalizeFDMatch(match, teamIdStr);
+      if (!row) {
+        return;
+      }
+      if (!unique.has(row.idEvent)) {
+        unique.set(row.idEvent, row);
+      }
+    });
+  };
+
+  try {
+    const payload = await fetchFD(
+      `/teams/${encodeURIComponent(teamId)}/matches?status=FINISHED&dateFrom=${dateFrom}&dateTo=${dateTo}`,
+      apiKey
+    );
+    addMatches(payload.matches || []);
+  } catch (_error) {
+    // Continue with competition fallback below.
+  }
+
+  if (unique.size < 10) {
+    for (const code of FD_COMP_CODES) {
+      try {
+        const payload = await fetchFD(
+          `/competitions/${encodeURIComponent(code)}/matches?status=FINISHED&dateFrom=${dateFrom}&dateTo=${dateTo}`,
+          apiKey
+        );
+        addMatches(payload.matches || []);
+      } catch (_error) {
+        // Ignore unavailable competitions and continue.
+      }
+      if (unique.size >= 10) {
+        break;
+      }
+    }
+  }
+
+  if (unique.size === 0 && teamName) {
+    try {
+      const fallbackRows = await fetchTeamMatchesSportsDbByName(teamName);
+      fallbackRows.forEach((row) => {
+        if (!unique.has(row.idEvent)) {
+          unique.set(row.idEvent, row);
+        }
+      });
+    } catch (_error) {
+      // Keep empty result if fallback source is also unavailable.
+    }
+  }
+
+  return Array.from(unique.values())
     .sort((a, b) => b.sortTs - a.sortTs)
     .slice(0, 10);
 }
@@ -959,26 +1085,27 @@ export default function App() {
       let resolvedAwayId = nextActive.awayId;
 
       if (!resolvedHomeId) {
-      const team = await findTeamFD(homeName, nextFields.fdApiKey);
-      resolvedHomeId = team.id;
-    }
+        const team = await findTeamFD(homeName, nextFields.fdApiKey);
+        resolvedHomeId = team.id;
+      }
 
-    if (!resolvedAwayId) {
-      const team = await findTeamFD(awayName, nextFields.fdApiKey);
-      resolvedAwayId = team.id;
-    }
+      if (!resolvedAwayId) {
+        const team = await findTeamFD(awayName, nextFields.fdApiKey);
+        resolvedAwayId = team.id;
+      }
 
-    const updatedActive = {
-      homeId: resolvedHomeId,
-      awayId: resolvedAwayId,
-      homeName,
-      awayName
-    };
-    setActiveTeams(updatedActive);
+      const updatedActive = {
+        homeId: resolvedHomeId,
+        awayId: resolvedAwayId,
+        homeName,
+        awayName
+      };
+      setActiveTeams(updatedActive);
 
-    const [homeRows, awayRows, fifaRanks] = await Promise.all([
-      fetchTeamMatchesFD(updatedActive.homeId, nextFields.fdApiKey),
-      fetchTeamMatchesFD(updatedActive.awayId, nextFields.fdApiKey),
+      const [homeRows, awayRows, fifaRanks] = await Promise.all([
+        fetchTeamMatchesFD(updatedActive.homeId, nextFields.fdApiKey, homeName),
+        fetchTeamMatchesFD(updatedActive.awayId, nextFields.fdApiKey, awayName),
+        fetchFifaRankLookup()
       ]);
 
       setTeamRanks({
@@ -1027,8 +1154,8 @@ export default function App() {
     }
   }
 
-  async function getRecentTeamMetrics(teamId, apiKey) {
-    const rows = await fetchTeamMatchesFD(teamId, apiKey);
+  async function getRecentTeamMetrics(teamId, apiKey, teamName = "") {
+    const rows = await fetchTeamMatchesFD(teamId, apiKey, teamName);
     const formEntries = buildFormEntries(rows, FORM_ICON_COUNT);
 
     if (rows.length === 0) {
@@ -1060,8 +1187,8 @@ export default function App() {
     setApiStatus(`Loading recent stats for ${nextFields.teamA} and ${nextFields.teamB}...`);
 
     const [homeMetrics, awayMetrics] = await Promise.all([
-      getRecentTeamMetrics(fixture.idHomeTeam, fields.fdApiKey),
-      getRecentTeamMetrics(fixture.idAwayTeam, fields.fdApiKey)
+      getRecentTeamMetrics(fixture.idHomeTeam, fields.fdApiKey, fixture.strHomeTeam || ""),
+      getRecentTeamMetrics(fixture.idAwayTeam, fields.fdApiKey, fixture.strAwayTeam || "")
     ]);
 
     const updatedFields = {
