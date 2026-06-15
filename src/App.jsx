@@ -762,6 +762,7 @@ export default function App() {
   async function getRecentTeamMetrics(teamId) {
     const payload = await fetchSportsDb(`/eventslast.php?id=${encodeURIComponent(teamId)}`);
     const events = payload.results || [];
+    const quickRows = [];
 
     let points = 0;
     let goalsForTotal = 0;
@@ -782,6 +783,11 @@ export default function App() {
       goalsForTotal += goalsFor;
       counted += 1;
 
+      const row = normalizeMatchEvent(event, teamId);
+      if (row) {
+        quickRows.push(row);
+      }
+
       if (goalsFor > goalsAgainst) {
         points += 3;
       } else if (goalsFor === goalsAgainst) {
@@ -789,13 +795,16 @@ export default function App() {
       }
     });
 
+    const formEntries = buildFormEntries(quickRows, FORM_ICON_COUNT);
+
     if (counted === 0) {
-      return { formPoints: 14, avgGoals: 1.2 };
+      return { formPoints: 14, avgGoals: 1.2, formEntries };
     }
 
     return {
       formPoints: clamp(points, 0, 30),
-      avgGoals: clamp(goalsForTotal / counted, 0, 6)
+      avgGoals: clamp(goalsForTotal / counted, 0, 6),
+      formEntries
     };
   }
 
@@ -825,6 +834,9 @@ export default function App() {
       goalsA: Number(homeMetrics.avgGoals.toFixed(1)),
       goalsB: Number(awayMetrics.avgGoals.toFixed(1))
     };
+
+    setHomeFormEntries(homeMetrics.formEntries || createEmptyFormEntries(FORM_ICON_COUNT));
+    setAwayFormEntries(awayMetrics.formEntries || createEmptyFormEntries(FORM_ICON_COUNT));
 
     const updatedActive = {
       homeId: fixture.idHomeTeam || null,
