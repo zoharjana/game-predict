@@ -663,6 +663,30 @@ async function findTeamFD(query, apiKey) {
     }
   }
 
+  // Fallback: infer team from scheduled matches when competition team lists are incomplete.
+  const today = new Date();
+  const dateFrom = today.toISOString().slice(0, 10);
+  const horizon = new Date(today);
+  horizon.setDate(horizon.getDate() + 365);
+  const dateTo = horizon.toISOString().slice(0, 10);
+  const matchesPayload = await fetchFD(
+    `/matches?status=SCHEDULED&dateFrom=${dateFrom}&dateTo=${dateTo}`,
+    apiKey
+  );
+
+  const inferred = (matchesPayload.matches || []).find((m) => {
+    const home = normalizeTeamName(m.homeTeam?.name || "");
+    const away = normalizeTeamName(m.awayTeam?.name || "");
+    return home === queryNorm || away === queryNorm || home.includes(queryNorm) || away.includes(queryNorm);
+  });
+
+  if (inferred?.homeTeam && normalizeTeamName(inferred.homeTeam.name || "").includes(queryNorm)) {
+    return inferred.homeTeam;
+  }
+  if (inferred?.awayTeam) {
+    return inferred.awayTeam;
+  }
+
   throw new Error(`No team found for "${query}". Try a full team or country name.`);
 }
 
@@ -1164,7 +1188,7 @@ export default function App() {
       <main className="page">
         <header className="hero">
           <p className="eyebrow">Experimental Match Intelligence</p>
-          <h1>Predict Your Next Clash</h1>
+          <h1>Predict Your Next Game</h1>
           <p className="subtitle">Blend form, scoring trends, and injuries into one fast match forecast.</p>
         </header>
 

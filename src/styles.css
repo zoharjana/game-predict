@@ -49,7 +49,7 @@ body {
   margin: 0;
   line-height: 0.95;
   letter-spacing: 0.02em;
-  font-size: clamp(2.2rem, 5vw, 4.4rem);
+  font-size: clamp(1.9rem, 4.4vw, 3.8rem);
   text-transform: uppercase;
 }
 
