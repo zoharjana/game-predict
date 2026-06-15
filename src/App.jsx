@@ -624,19 +624,46 @@ function normalizeFDFixture(match) {
   };
 }
 
-async function findTeamFD(query, apiKey) {
-  const payload = await fetchFD(`/teams?name=${encodeURIComponent(query)}&limit=10`, apiKey);
-  const teams = payload.teams || [];
+// Competitions available on the free tier grouped by priority
+const FD_COMPETITION_GROUPS = [
+  ["WC", "EC"],                     // national teams
+  ["PL", "BL1", "SA", "FL1", "PD"], // top 5 leagues
+  ["CL", "ELC", "DED", "PPL"]      // cups + other leagues
+];
 
-  if (teams.length === 0) {
-    throw new Error(`No team found for "${query}". Try a different name.`);
+async function findTeamFD(query, apiKey) {
+  const queryNorm = normalizeTeamName(query);
+
+  function matchTeam(t) {
+    const name = normalizeTeamName(t.name || "");
+    const short = normalizeTeamName(t.shortName || "");
+    const tla = (t.tla || "").toLowerCase();
+    return (
+      name === queryNorm ||
+      short === queryNorm ||
+      tla === queryNorm ||
+      name.includes(queryNorm) ||
+      queryNorm.includes(name)
+    );
   }
 
-  const queryNorm = normalizeTeamName(query);
-  const exact = teams.find(
-    (t) => normalizeTeamName(t.name || "") === queryNorm || normalizeTeamName(t.shortName || "") === queryNorm
-  );
-  return exact || teams[0];
+  for (const group of FD_COMPETITION_GROUPS) {
+    const results = await Promise.allSettled(
+      group.map((comp) => fetchFD(`/competitions/${comp}/teams`, apiKey))
+    );
+
+    for (const result of results) {
+      if (result.status !== "fulfilled") {
+        continue;
+      }
+      const match = (result.value.teams || []).find(matchTeam);
+      if (match) {
+        return match;
+      }
+    }
+  }
+
+  throw new Error(`No team found for "${query}". Try a full team or country name.`);
 }
 
 async function fetchTeamMatchesFD(teamId, apiKey) {
@@ -1144,20 +1171,6 @@ export default function App() {
         <section className="panel input-panel" aria-label="Prediction input">
           <div className="api-grid">
             <div>
-              <label htmlFor="fdApiKey">football-data.org API Key</label>
-              <input
-                id="fdApiKey"
-                type="password"
-                value={fields.fdApiKey}
-                onChange={(e) => updateField("fdApiKey", e.target.value)}
-                placeholder="Paste your API key"
-              />
-              <small>Get one free at football-data.org</small>
-            </div>
-          </div>
-
-          <div className="api-grid">
-            <div>
               <label htmlFor="nationQuery">Team or Club</label>
               <input
                 id="nationQuery"
@@ -1204,25 +1217,6 @@ export default function App() {
             </div>
             <div>
               <p className="api-status">{apiStatus}</p>
-            </div>
-          </div>
-
-          <div className="api-grid api-grid-secondary">
-            <div>
-              <label htmlFor="oddsApiKey">The Odds API Key</label>
-              <input
-                id="oddsApiKey"
-                type="password"
-                value={fields.oddsApiKey}
-                onChange={(e) => updateField("oddsApiKey", e.target.value)}
-                placeholder="Paste your API key"
-              />
-              <small>Get one from the-odds-api.com</small>
-            </div>
-            <div className="api-action-wrap">
-              <button className="predict-btn" type="button" onClick={fetchOddsForCurrentFixture}>
-                Load Betting Odds
-              </button>
             </div>
           </div>
 
