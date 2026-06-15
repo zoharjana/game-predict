@@ -238,6 +238,25 @@ small {
   color: var(--text-muted);
 }
 
+.result-top small {
+  display: block;
+  margin-top: 6px;
+  color: #a8bbc5;
+}
+
+.team-rank-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.team-rank-label small {
+  margin: 0;
+  color: #a8bbc5;
+  font-weight: 700;
+}
+
 .bars {
   margin-top: 18px;
   display: grid;

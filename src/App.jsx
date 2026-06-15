@@ -6,6 +6,10 @@ const API_BASES = [
   "https://www.thesportsdb.com/api/v1/json/123"
 ];
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
+const FIFA_RANKING_API = "https://api.fifa.com/api/v3/fifarankings/rankings/live?gender=1&sportType=0&language=en";
+
+let fifaRankingCachePromise = null;
+let fifaRankingCache = null;
 
 const initialFields = {
   nationQuery: "France",
@@ -79,6 +83,24 @@ function normalizeFetchError(error) {
   return error instanceof Error ? error : new Error("Unknown network error.");
 }
 
+async function fetchJsonViaProxies(fullUrl) {
+  const proxies = [
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(fullUrl)}`,
+    `https://corsproxy.io/?${encodeURIComponent(fullUrl)}`
+  ];
+
+  const errors = [];
+  for (const proxyUrl of proxies) {
+    try {
+      return await fetchJson(proxyUrl);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  throw errors[errors.length - 1] || new Error("Proxy fallback failed.");
+}
+
 async function fetchJson(url) {
   const timeoutMs = 12000;
   const retries = 1;
@@ -118,21 +140,7 @@ async function fetchJson(url) {
 }
 
 async function fetchSportsDbViaProxy(fullUrl) {
-  const proxies = [
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(fullUrl)}`,
-    `https://corsproxy.io/?${encodeURIComponent(fullUrl)}`
-  ];
-
-  const errors = [];
-  for (const proxyUrl of proxies) {
-    try {
-      return await fetchJson(proxyUrl);
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-
-  throw errors[errors.length - 1] || new Error("CORS proxy fallback failed.");
+  return fetchJsonViaProxies(fullUrl);
 }
 
 async function fetchSportsDb(path) {
@@ -175,6 +183,152 @@ function formatDateLabel(value) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const year = String(date.getFullYear()).slice(-2);
   return `${day}.${month}.${year}`;
+}
+
+function normalizeFifaTeamName(name) {
+  return normalizeTeamName(name)
+    .replace(/\bnational\b/g, "")
+    .replace(/\bteam\b/g, "")
+    .replace(/\bfc\b/g, "")
+    .replace(/\bmen's\b/g, "")
+    .replace(/\bmen\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildFifaNameVariants(name) {
+  const normalized = normalizeFifaTeamName(name);
+  const variants = new Set([normalized]);
+
+  const aliases = {
+    usa: ["united states", "united states of america"],
+    uae: ["united arab emirates"],
+    "south korea": ["korea republic"],
+    "north korea": ["dpr korea"],
+    "ivory coast": ["cote d ivoire", "cote divoire"],
+    "czech republic": ["czechia"],
+    "dr congo": ["congo democratic republic", "democratic republic of congo"],
+    russia: ["russian federation"],
+    turkey: ["turkiye"],
+    iran: ["iran islamic republic of"]
+  };
+
+  Object.entries(aliases).forEach(([key, values]) => {
+    if (normalized === key || normalized.includes(key) || key.includes(normalized)) {
+      values.forEach((value) => variants.add(value));
+    }
+  });
+
+  if (normalized.includes("united states")) {
+    variants.add("usa");
+  }
+  if (normalized.includes("korea republic")) {
+    variants.add("south korea");
+  }
+  if (normalized.includes("cote d ivoire") || normalized.includes("cote divoire")) {
+    variants.add("ivory coast");
+  }
+
+  return Array.from(variants).filter(Boolean);
+}
+
+function formatFifaRank(rankEntry) {
+  if (!rankEntry || !Number.isFinite(rankEntry.rank)) {
+    return null;
+  }
+
+  const points = Number.isFinite(rankEntry.points) ? `, ${rankEntry.points.toFixed(2)} pts` : "";
+  return `FIFA #${rankEntry.rank}${points}`;
+}
+
+function formatTeamWithRank(name, rankEntry) {
+  const rankLabel = formatFifaRank(rankEntry);
+  if (!rankLabel) {
+    return name;
+  }
+
+  return `${name} (${rankLabel})`;
+}
+
+function fifaRankStrength(rank) {
+  const safeRank = clamp(asNumber(rank, 0), 1, 300);
+  return 1 / Math.sqrt(safeRank);
+}
+
+function buildFifaRankLookup(results) {
+  const lookup = new Map();
+
+  (results || []).forEach((entry) => {
+    const rank = asNumber(entry.Rank, null);
+    if (rank === null) {
+      return;
+    }
+
+    const teamName = normalizeFifaTeamName(entry.TeamName || "");
+    if (!teamName) {
+      return;
+    }
+
+    const rankEntry = {
+      rank,
+      points: asNumber(entry.TotalPoints, null),
+      movement: asNumber(entry.RankingMovement, 0),
+      teamName: entry.TeamName || "",
+      confederation: entry.ConfederationName || ""
+    };
+
+    lookup.set(teamName, rankEntry);
+
+    buildFifaNameVariants(entry.TeamName || "").forEach((variant) => {
+      if (!lookup.has(variant)) {
+        lookup.set(variant, rankEntry);
+      }
+    });
+  });
+
+  return lookup;
+}
+
+function findFifaRankForTeam(teamName, lookup) {
+  if (!teamName || !(lookup instanceof Map)) {
+    return null;
+  }
+
+  const variants = buildFifaNameVariants(teamName);
+  for (const variant of variants) {
+    if (lookup.has(variant)) {
+      return lookup.get(variant);
+    }
+  }
+
+  const normalized = normalizeFifaTeamName(teamName);
+  for (const [key, value] of lookup.entries()) {
+    if (key.includes(normalized) || normalized.includes(key)) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+async function fetchFifaRankLookup() {
+  if (fifaRankingCache) {
+    return fifaRankingCache;
+  }
+
+  if (!fifaRankingCachePromise) {
+    fifaRankingCachePromise = (async () => {
+      const payload = await fetchJsonViaProxies(FIFA_RANKING_API);
+      const lookup = buildFifaRankLookup(payload.Results || payload.results || []);
+      fifaRankingCache = lookup;
+      return lookup;
+    })().catch((error) => {
+      fifaRankingCachePromise = null;
+      throw error;
+    });
+  }
+
+  return fifaRankingCachePromise;
 }
 
 function getOutcomeFromPerspective(goalsFor, goalsAgainst) {
@@ -284,7 +438,7 @@ function expectedGoalsToScore(goals) {
   return 4;
 }
 
-function buildInsights(values, metrics) {
+function buildInsights(values, metrics, ranks) {
   const insights = [];
 
   if (values.formA > values.formB + 2) {
@@ -299,6 +453,16 @@ function buildInsights(values, metrics) {
     insights.push(`${values.teamA} shows higher attacking output.`);
   } else if (values.goalsB > values.goalsA + 0.4) {
     insights.push(`${values.teamB} is creating more scoring volume.`);
+  }
+
+  if (ranks.home && ranks.away) {
+    if (ranks.home.rank < ranks.away.rank) {
+      insights.push(`${values.teamA} has the better FIFA ranking.`);
+    } else if (ranks.away.rank < ranks.home.rank) {
+      insights.push(`${values.teamB} has the better FIFA ranking.`);
+    } else {
+      insights.push("Both teams are level on FIFA ranking.");
+    }
   }
 
   if (values.injuriesA !== values.injuriesB) {
@@ -645,6 +809,7 @@ export default function App() {
     meta: "Load a fixture and fetch betting odds."
   });
   const [history, setHistory] = useState({ home: [], away: [], h2h: [] });
+  const [teamRanks, setTeamRanks] = useState({ home: null, away: null });
   const [activeTeams, setActiveTeams] = useState({
     homeId: null,
     awayId: null,
@@ -668,8 +833,11 @@ export default function App() {
     const goalsDelta = (values.goalsA - values.goalsB) / 3;
     const injuryDelta = (values.injuriesB - values.injuriesA) / 11;
     const homeBoost = 0.12;
+    const homeRankStrength = fifaRankStrength(teamRanks.home?.rank);
+    const awayRankStrength = fifaRankStrength(teamRanks.away?.rank);
+    const rankDelta = homeRankStrength - awayRankStrength;
 
-    const advantage = formDelta * 0.55 + goalsDelta * 0.35 + injuryDelta * 0.25 + homeBoost;
+    const advantage = formDelta * 0.48 + goalsDelta * 0.3 + injuryDelta * 0.2 + homeBoost + rankDelta * 0.28;
     const homeRaw = toProbability(advantage);
     const awayRaw = 1 - homeRaw;
     const closeness = 1 - clamp(Math.abs(homeRaw - awayRaw) * 1.8, 0, 0.95);
@@ -683,8 +851,13 @@ export default function App() {
 
     const formImpact = (values.formA - values.formB) / 60;
     const injuryImpact = (values.injuriesB - values.injuriesA) / 22;
-    const expectedHomeGoals = clamp(xgA + formImpact * 0.35 + injuryImpact * 0.2 + homeBoost * 0.6, 0.1, 4.5);
-    const expectedAwayGoals = clamp(xgB - formImpact * 0.25 - injuryImpact * 0.15, 0.1, 4.5);
+    const rankGoalSwing = rankDelta * 0.2;
+    const expectedHomeGoals = clamp(
+      xgA + formImpact * 0.3 + injuryImpact * 0.16 + homeBoost * 0.5 + rankGoalSwing,
+      0.1,
+      4.5
+    );
+    const expectedAwayGoals = clamp(xgB - formImpact * 0.2 - injuryImpact * 0.12 - rankGoalSwing, 0.1, 4.5);
 
     const homeScore = expectedGoalsToScore(expectedHomeGoals);
     const awayScore = expectedGoalsToScore(expectedAwayGoals);
@@ -718,9 +891,19 @@ export default function App() {
       expectedReason: `xG ${expectedHomeGoals.toFixed(2)}-${expectedAwayGoals.toFixed(
         2
       )} after form/injury/home adjustments.`,
-      insights: buildInsights(values, { confidenceScore })
+      homeRankLabel: formatFifaRank(teamRanks.home),
+      awayRankLabel: formatFifaRank(teamRanks.away),
+      fixtureLabel: `${formatTeamWithRank(values.teamA, teamRanks.home)} vs ${formatTeamWithRank(
+        values.teamB,
+        teamRanks.away
+      )}`,
+      rankSummary:
+        `${values.teamA} ${formatFifaRank(teamRanks.home) || "FIFA rank n/a"} | ${values.teamB} ${
+          formatFifaRank(teamRanks.away) || "FIFA rank n/a"
+        }`,
+      insights: buildInsights(values, { confidenceScore }, teamRanks)
     };
-  }, [fields]);
+  }, [fields, teamRanks]);
 
   async function refreshMatchHistory(nextActive = activeTeams, nextFields = fields) {
     const homeName = nextFields.teamA.trim() || nextActive.homeName;
@@ -750,10 +933,16 @@ export default function App() {
       };
       setActiveTeams(updatedActive);
 
-      const [homeRows, awayRows] = await Promise.all([
+      const [homeRows, awayRows, fifaRanks] = await Promise.all([
         fetchTeamMatches(updatedActive.homeId),
-        fetchTeamMatches(updatedActive.awayId)
+        fetchTeamMatches(updatedActive.awayId),
+        fetchFifaRankLookup()
       ]);
+
+      setTeamRanks({
+        home: findFifaRankForTeam(homeName, fifaRanks),
+        away: findFifaRankForTeam(awayName, fifaRanks)
+      });
 
       const h2hRows = extractHeadToHead(
         homeRows,
@@ -790,6 +979,7 @@ export default function App() {
         setHistoryStatus("Recent form and head-to-head loaded (last 10 each).");
       }
     } catch (error) {
+      setTeamRanks({ home: null, away: null });
       setHistory({ home: [], away: [], h2h: [] });
       setHistoryStatus(`History load failed: ${error.message}`);
     }
@@ -1208,13 +1398,14 @@ export default function App() {
 
         <section className="panel output-panel" aria-live="polite">
           <div className="result-top">
-            <h2>{prediction.fixtureTitle}</h2>
+            <h2>{prediction.fixtureLabel}</h2>
             <p>{prediction.winnerText}</p>
+            <small>{prediction.rankSummary}</small>
           </div>
 
           <div className="bars" role="img" aria-label="Win probability bars">
             <div className="bar-row">
-              <span>{prediction.teamA}</span>
+              <span>{formatTeamWithRank(prediction.teamA, teamRanks.home)}</span>
               <div className="bar-track">
                 <div className="bar fill-home" style={{ width: prediction.barA }}></div>
               </div>
@@ -1228,7 +1419,7 @@ export default function App() {
               <strong>{prediction.probD}%</strong>
             </div>
             <div className="bar-row">
-              <span>{prediction.teamB}</span>
+              <span>{formatTeamWithRank(prediction.teamB, teamRanks.away)}</span>
               <div className="bar-track">
                 <div className="bar fill-away" style={{ width: prediction.barB }}></div>
               </div>
@@ -1297,7 +1488,7 @@ export default function App() {
 
           <div className="history-grid">
             <article className="history-card">
-              <h3>Last 10: {fields.teamA}</h3>
+              <h3>Last 10: {formatTeamWithRank(fields.teamA, teamRanks.home)}</h3>
               <div className="history-list">
                 {history.home.length === 0 ? (
                   <p className="history-empty">No recent matches found.</p>
@@ -1315,7 +1506,7 @@ export default function App() {
             </article>
 
             <article className="history-card">
-              <h3>Last 10: {fields.teamB}</h3>
+              <h3>Last 10: {formatTeamWithRank(fields.teamB, teamRanks.away)}</h3>
               <div className="history-list">
                 {history.away.length === 0 ? (
                   <p className="history-empty">No recent matches found.</p>
@@ -1335,7 +1526,10 @@ export default function App() {
 
           <article className="history-card history-card-wide">
             <h3>
-              Head-to-Head: {fields.teamA} vs {fields.teamB}
+              Head-to-Head: {formatTeamWithRank(fields.teamA, teamRanks.home)} vs {formatTeamWithRank(
+                fields.teamB,
+                teamRanks.away
+              )}
             </h3>
             <div className="history-list">
               {history.h2h.length === 0 ? (
