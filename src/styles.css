@@ -136,6 +136,7 @@ small {
   gap: 6px;
   min-height: 42px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .form-icon {
@@ -148,6 +149,7 @@ small {
   font-size: 0.84rem;
   font-weight: 700;
   border: 1px solid transparent;
+  cursor: help;
 }
 
 .form-win {

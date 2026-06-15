@@ -20,7 +20,7 @@ const initialFields = {
   injuriesB: 3
 };
 
-const DEFAULT_HOME_FORM_RESULTS = ["W", "W", "W", "L", "L"];
+const FORM_ICON_COUNT = 10;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -315,25 +315,38 @@ function badgeClass(outcome) {
   return "result-badge result-draw";
 }
 
-function normalizeFormResults(results, size = 5) {
-  const normalized = (results || [])
-    .map((result) => String(result || "").toUpperCase())
-    .filter((result) => result === "W" || result === "D" || result === "L")
-    .slice(0, size);
-
-  while (normalized.length < size) {
-    normalized.push("-");
-  }
-
-  return normalized;
+function createEmptyFormEntries(size = FORM_ICON_COUNT) {
+  return Array.from({ length: size }, (_value, index) => ({
+    key: `empty-${index}`,
+    result: "-",
+    tooltip: "No match data available"
+  }));
 }
 
-function formPointsFromResults(results) {
-  return (results || []).reduce((total, result) => {
-    if (result === "W") {
+function buildFormEntries(rows, size = FORM_ICON_COUNT) {
+  const entries = (rows || []).slice(0, size).map((row, index) => ({
+    key: String(row.idEvent || `${row.dateLabel}-${row.fixtureLabel}-${index}`),
+    result: row.outcome,
+    tooltip: `${row.dateLabel} | ${row.fixtureLabel} | ${row.scoreLabel} | ${row.outcome}`
+  }));
+
+  while (entries.length < size) {
+    entries.push({
+      key: `empty-${entries.length}`,
+      result: "-",
+      tooltip: "No match data available"
+    });
+  }
+
+  return entries;
+}
+
+function formPointsFromEntries(entries) {
+  return (entries || []).reduce((total, entry) => {
+    if (entry.result === "W") {
       return total + 3;
     }
-    if (result === "D") {
+    if (entry.result === "D") {
       return total + 1;
     }
     return total;
@@ -589,7 +602,8 @@ function fixtureMatchScore(event, homeTeam, awayTeam) {
 
 export default function App() {
   const [fields, setFields] = useState(initialFields);
-  const [homeFormResults, setHomeFormResults] = useState(DEFAULT_HOME_FORM_RESULTS);
+  const [homeFormEntries, setHomeFormEntries] = useState(createEmptyFormEntries(FORM_ICON_COUNT));
+  const [awayFormEntries, setAwayFormEntries] = useState(createEmptyFormEntries(FORM_ICON_COUNT));
   const [loadedFixtures, setLoadedFixtures] = useState([]);
   const [selectedFixture, setSelectedFixture] = useState("0");
   const [apiStatus, setApiStatus] = useState("Data source: TheSportsDB public API");
@@ -612,15 +626,15 @@ export default function App() {
     const values = {
       teamA: fields.teamA.trim() || "Home Team",
       teamB: fields.teamB.trim() || "Away Team",
-      formA: clamp(Number(fields.formA) || 0, 0, 15),
-      formB: clamp(Number(fields.formB) || 0, 0, 15),
+      formA: clamp(Number(fields.formA) || 0, 0, 30),
+      formB: clamp(Number(fields.formB) || 0, 0, 30),
       goalsA: clamp(Number(fields.goalsA) || 0, 0, 6),
       goalsB: clamp(Number(fields.goalsB) || 0, 0, 6),
       injuriesA: clamp(Number(fields.injuriesA) || 0, 0, 11),
       injuriesB: clamp(Number(fields.injuriesB) || 0, 0, 11)
     };
 
-    const formDelta = (values.formA - values.formB) / 15;
+    const formDelta = (values.formA - values.formB) / 30;
     const goalsDelta = (values.goalsA - values.goalsB) / 3;
     const injuryDelta = (values.injuriesB - values.injuriesA) / 11;
     const homeBoost = 0.12;
@@ -634,10 +648,10 @@ export default function App() {
     const homeProb = homeRaw * nonDrawBudget;
     const awayProb = awayRaw * nonDrawBudget;
 
-    const xgA = clamp(values.goalsA * 0.78 + values.formA / 12 + 0.22, 0.2, 4.0);
-    const xgB = clamp(values.goalsB * 0.78 + values.formB / 12, 0.2, 4.0);
+    const xgA = clamp(values.goalsA * 0.78 + values.formA / 24 + 0.22, 0.2, 4.0);
+    const xgB = clamp(values.goalsB * 0.78 + values.formB / 24, 0.2, 4.0);
 
-    const formImpact = (values.formA - values.formB) / 30;
+    const formImpact = (values.formA - values.formB) / 60;
     const injuryImpact = (values.injuriesB - values.injuriesA) / 22;
     const expectedHomeGoals = clamp(xgA + formImpact * 0.35 + injuryImpact * 0.2 + homeBoost * 0.6, 0.1, 4.5);
     const expectedAwayGoals = clamp(xgB - formImpact * 0.25 - injuryImpact * 0.15, 0.1, 4.5);
@@ -720,11 +734,14 @@ export default function App() {
         updatedActive.awayId
       );
 
-      const nextHomeFormResults = normalizeFormResults(homeRows.slice(0, 5).map((row) => row.outcome));
-      const nextHomeFormPoints = formPointsFromResults(nextHomeFormResults);
+      const nextHomeFormEntries = buildFormEntries(homeRows, FORM_ICON_COUNT);
+      const nextAwayFormEntries = buildFormEntries(awayRows, FORM_ICON_COUNT);
+      const nextHomeFormPoints = formPointsFromEntries(nextHomeFormEntries);
+      const nextAwayFormPoints = formPointsFromEntries(nextAwayFormEntries);
 
-      setHomeFormResults(nextHomeFormResults);
-      setFields((prev) => ({ ...prev, formA: nextHomeFormPoints }));
+      setHomeFormEntries(nextHomeFormEntries);
+      setAwayFormEntries(nextAwayFormEntries);
+      setFields((prev) => ({ ...prev, formA: nextHomeFormPoints, formB: nextAwayFormPoints }));
 
       setHistory({ home: homeRows, away: awayRows, h2h: h2hRows });
 
@@ -750,7 +767,7 @@ export default function App() {
     let goalsForTotal = 0;
     let counted = 0;
 
-    events.slice(0, 5).forEach((event) => {
+    events.slice(0, 10).forEach((event) => {
       const homeScore = asNumber(event.intHomeScore, null);
       const awayScore = asNumber(event.intAwayScore, null);
 
@@ -773,11 +790,11 @@ export default function App() {
     });
 
     if (counted === 0) {
-      return { formPoints: 7, avgGoals: 1.2 };
+      return { formPoints: 14, avgGoals: 1.2 };
     }
 
     return {
-      formPoints: clamp(points, 0, 15),
+      formPoints: clamp(points, 0, 30),
       avgGoals: clamp(goalsForTotal / counted, 0, 6)
     };
   }
@@ -1031,27 +1048,44 @@ export default function App() {
 
           <div className="metrics-grid">
             <div>
-              <label htmlFor="formA">Home Form (last 5)</label>
-              <div id="formA" className="form-icons" role="img" aria-label={`Home form last five: ${homeFormResults.join(" ")}`}>
-                {homeFormResults.map((result, index) => (
-                  <span key={`home-form-${index}`} className={formIconClass(result)}>
-                    {result}
+              <label htmlFor="formA">Home Form (last 10)</label>
+              <div
+                id="formA"
+                className="form-icons"
+                role="img"
+                aria-label={`Home form last ten: ${homeFormEntries.map((entry) => entry.result).join(" ")}`}
+              >
+                {homeFormEntries.map((entry) => (
+                  <span
+                    key={`home-form-${entry.key}`}
+                    className={formIconClass(entry.result)}
+                    title={entry.tooltip}
+                  >
+                    {entry.result}
                   </span>
                 ))}
               </div>
-              <small>Auto-calculated from last 5 results (W=3, D=1, L=0)</small>
+              <small>Auto-calculated from last 10 results (W=3, D=1, L=0)</small>
             </div>
             <div>
-              <label htmlFor="formB">Away Form (last 5)</label>
-              <input
+              <label htmlFor="formB">Away Form (last 10)</label>
+              <div
                 id="formB"
-                type="number"
-                min="0"
-                max="15"
-                value={fields.formB}
-                onChange={(e) => updateField("formB", Number(e.target.value))}
-              />
-              <small>Points out of 15</small>
+                className="form-icons"
+                role="img"
+                aria-label={`Away form last ten: ${awayFormEntries.map((entry) => entry.result).join(" ")}`}
+              >
+                {awayFormEntries.map((entry) => (
+                  <span
+                    key={`away-form-${entry.key}`}
+                    className={formIconClass(entry.result)}
+                    title={entry.tooltip}
+                  >
+                    {entry.result}
+                  </span>
+                ))}
+              </div>
+              <small>Auto-calculated from last 10 results (W=3, D=1, L=0)</small>
             </div>
             <div>
               <label htmlFor="goalsA">Home Avg Goals</label>
