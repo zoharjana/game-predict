@@ -149,7 +149,37 @@ small {
   font-size: 0.84rem;
   font-weight: 700;
   border: 1px solid transparent;
-  cursor: help;
+  cursor: default;
+  position: relative;
+}
+
+.form-icon::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  min-width: 210px;
+  max-width: 300px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(8, 14, 19, 0.96);
+  color: #eef6fb;
+  font-size: 0.72rem;
+  line-height: 1.3;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease;
+  z-index: 20;
+}
+
+.form-icon:hover::after {
+  opacity: 1;
+  visibility: visible;
 }
 
 .form-win {

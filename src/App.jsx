@@ -216,12 +216,22 @@ function normalizeMatchEvent(event, teamId) {
     dateLabel: formatDateLabel(event.dateEvent || event.strTimestamp),
     fixtureLabel: `${home} vs ${away}`,
     scoreLabel: `${homeScore} - ${awayScore}`,
+    leagueName: event.strLeague || event.strLeagueAlternate || "",
+    goalsFor,
+    goalsAgainst,
     outcome: getOutcomeFromPerspective(goalsFor, goalsAgainst),
     homeTeam: home,
     awayTeam: away,
     homeTeamId: String(event.idHomeTeam || ""),
     awayTeamId: String(event.idAwayTeam || "")
   };
+}
+
+function isOfficialCompetitionEvent(event) {
+  const league = normalizeTeamName(event.strLeague || event.leagueName || "");
+  const eventName = normalizeTeamName(event.strEvent || event.strEventAlternate || event.fixtureLabel || "");
+  const combined = `${league} ${eventName}`;
+  return !combined.includes("friendly");
 }
 
 function matchesTeam(event, teamId, teamNameNorm) {
@@ -319,7 +329,7 @@ function createEmptyFormEntries(size = FORM_ICON_COUNT) {
   return Array.from({ length: size }, (_value, index) => ({
     key: `empty-${index}`,
     result: "-",
-    tooltip: "No match data available"
+    tooltip: "No official match data available"
   }));
 }
 
@@ -334,7 +344,7 @@ function buildFormEntries(rows, size = FORM_ICON_COUNT) {
     entries.push({
       key: `empty-${entries.length}`,
       result: "-",
-      tooltip: "No match data available"
+      tooltip: "No official match data available"
     });
   }
 
@@ -351,6 +361,22 @@ function formPointsFromEntries(entries) {
     }
     return total;
   }, 0);
+}
+
+function calculateStatsFromRows(rows, sampleSize = FORM_ICON_COUNT) {
+  const sample = (rows || []).slice(0, sampleSize);
+  if (sample.length === 0) {
+    return { formPoints: 14, avgGoals: 1.2 };
+  }
+
+  const formEntries = buildFormEntries(sample, sampleSize);
+  const formPoints = formPointsFromEntries(formEntries);
+  const goalsTotal = sample.reduce((total, row) => total + asNumber(row.goalsFor, 0), 0);
+
+  return {
+    formPoints: clamp(formPoints, 0, 30),
+    avgGoals: clamp(goalsTotal / sample.length, 0, 6)
+  };
 }
 
 function formIconClass(result) {
@@ -452,6 +478,10 @@ async function fetchTeamMatches(teamId) {
   const unique = new Map();
 
   (seed.results || []).forEach((event) => {
+    if (!isOfficialCompetitionEvent(event)) {
+      return;
+    }
+
     const row = normalizeMatchEvent(event, teamId);
     if (row) {
       unique.set(String(row.idEvent || `${row.dateLabel}-${row.fixtureLabel}`), row);
@@ -471,7 +501,7 @@ async function fetchTeamMatches(teamId) {
       }
 
       events
-        .filter((event) => matchesTeam(event, teamId, teamNameNorm))
+        .filter((event) => matchesTeam(event, teamId, teamNameNorm) && isOfficialCompetitionEvent(event))
         .forEach((event) => {
           const row = normalizeMatchEvent(event, teamId);
           if (!row) {
@@ -736,12 +766,18 @@ export default function App() {
 
       const nextHomeFormEntries = buildFormEntries(homeRows, FORM_ICON_COUNT);
       const nextAwayFormEntries = buildFormEntries(awayRows, FORM_ICON_COUNT);
-      const nextHomeFormPoints = formPointsFromEntries(nextHomeFormEntries);
-      const nextAwayFormPoints = formPointsFromEntries(nextAwayFormEntries);
+      const homeStats = calculateStatsFromRows(homeRows, FORM_ICON_COUNT);
+      const awayStats = calculateStatsFromRows(awayRows, FORM_ICON_COUNT);
 
       setHomeFormEntries(nextHomeFormEntries);
       setAwayFormEntries(nextAwayFormEntries);
-      setFields((prev) => ({ ...prev, formA: nextHomeFormPoints, formB: nextAwayFormPoints }));
+      setFields((prev) => ({
+        ...prev,
+        formA: homeStats.formPoints,
+        formB: awayStats.formPoints,
+        goalsA: Number(homeStats.avgGoals.toFixed(1)),
+        goalsB: Number(awayStats.avgGoals.toFixed(1))
+      }));
 
       setHistory({ home: homeRows, away: awayRows, h2h: h2hRows });
 
@@ -768,7 +804,10 @@ export default function App() {
     let goalsForTotal = 0;
     let counted = 0;
 
-    events.slice(0, 10).forEach((event) => {
+    events
+      .filter((event) => isOfficialCompetitionEvent(event))
+      .slice(0, 10)
+      .forEach((event) => {
       const homeScore = asNumber(event.intHomeScore, null);
       const awayScore = asNumber(event.intAwayScore, null);
 
@@ -793,7 +832,7 @@ export default function App() {
       } else if (goalsFor === goalsAgainst) {
         points += 1;
       }
-    });
+      });
 
     const formEntries = buildFormEntries(quickRows, FORM_ICON_COUNT);
 
@@ -1071,13 +1110,14 @@ export default function App() {
                   <span
                     key={`home-form-${entry.key}`}
                     className={formIconClass(entry.result)}
-                    title={entry.tooltip}
+                    data-tooltip={entry.tooltip}
+                    aria-label={entry.tooltip}
                   >
                     {entry.result}
                   </span>
                 ))}
               </div>
-              <small>Auto-calculated from last 10 results (W=3, D=1, L=0)</small>
+              <small>Auto-calculated from last 10 official results (W=3, D=1, L=0)</small>
             </div>
             <div>
               <label htmlFor="formB">Away Form (last 10)</label>
@@ -1091,13 +1131,14 @@ export default function App() {
                   <span
                     key={`away-form-${entry.key}`}
                     className={formIconClass(entry.result)}
-                    title={entry.tooltip}
+                    data-tooltip={entry.tooltip}
+                    aria-label={entry.tooltip}
                   >
                     {entry.result}
                   </span>
                 ))}
               </div>
-              <small>Auto-calculated from last 10 results (W=3, D=1, L=0)</small>
+              <small>Auto-calculated from last 10 official results (W=3, D=1, L=0)</small>
             </div>
             <div>
               <label htmlFor="goalsA">Home Avg Goals</label>
@@ -1110,7 +1151,7 @@ export default function App() {
                 value={fields.goalsA}
                 onChange={(e) => updateField("goalsA", Number(e.target.value))}
               />
-              <small>Per game</small>
+              <small>Per game (last 10 official matches)</small>
             </div>
             <div>
               <label htmlFor="goalsB">Away Avg Goals</label>
@@ -1123,7 +1164,7 @@ export default function App() {
                 value={fields.goalsB}
                 onChange={(e) => updateField("goalsB", Number(e.target.value))}
               />
-              <small>Per game</small>
+              <small>Per game (last 10 official matches)</small>
             </div>
             <div>
               <label htmlFor="injuriesA">Home Injuries</label>
