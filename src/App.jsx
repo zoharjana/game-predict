@@ -140,30 +140,58 @@ async function fetchJson(url) {
 async function fetchFD(path, apiKey) {
   const url = `${FD_API_BASE}${path}`;
   const timeoutMs = 12000;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  const request = async (requestUrl) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(requestUrl, {
+        signal: controller.signal,
+        cache: "no-store",
+        headers: { "X-Auth-Token": apiKey }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+      }
+
+      const raw = await response.text();
+      try {
+        return JSON.parse(raw);
+      } catch (_error) {
+        throw new Error("Unexpected response format from football-data.org.");
+      }
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
 
   try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      cache: "no-store",
-      headers: { "X-Auth-Token": apiKey }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Request failed (${response.status})`);
-    }
-
-    const raw = await response.text();
-    try {
-      return JSON.parse(raw);
-    } catch (_error) {
-      throw new Error("Unexpected response format from football-data.org.");
-    }
+    return await request(url);
   } catch (error) {
-    throw normalizeFetchError(error);
-  } finally {
-    clearTimeout(timeoutId);
+    const message = String((error && error.message) || "").toLowerCase();
+    const isNetworkOrCors = error instanceof TypeError || message.includes("failed to fetch") || message.includes("network/cors");
+
+    if (!isNetworkOrCors) {
+      throw normalizeFetchError(error);
+    }
+
+    const proxyUrls = [
+      `https://corsproxy.io/?${encodeURIComponent(url)}`,
+      `https://cors.isomorphic-git.org/${url}`
+    ];
+
+    const proxyErrors = [error];
+    for (const proxyUrl of proxyUrls) {
+      try {
+        return await request(proxyUrl);
+      } catch (proxyError) {
+        proxyErrors.push(proxyError);
+      }
+    }
+
+    throw normalizeFetchError(proxyErrors[proxyErrors.length - 1]);
   }
 }
 
