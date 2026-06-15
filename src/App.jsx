@@ -20,6 +20,8 @@ const initialFields = {
   injuriesB: 3
 };
 
+const DEFAULT_HOME_FORM_RESULTS = ["W", "W", "W", "L", "L"];
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -313,6 +315,44 @@ function badgeClass(outcome) {
   return "result-badge result-draw";
 }
 
+function normalizeFormResults(results, size = 5) {
+  const normalized = (results || [])
+    .map((result) => String(result || "").toUpperCase())
+    .filter((result) => result === "W" || result === "D" || result === "L")
+    .slice(0, size);
+
+  while (normalized.length < size) {
+    normalized.push("-");
+  }
+
+  return normalized;
+}
+
+function formPointsFromResults(results) {
+  return (results || []).reduce((total, result) => {
+    if (result === "W") {
+      return total + 3;
+    }
+    if (result === "D") {
+      return total + 1;
+    }
+    return total;
+  }, 0);
+}
+
+function formIconClass(result) {
+  if (result === "W") {
+    return "form-icon form-win";
+  }
+  if (result === "L") {
+    return "form-icon form-loss";
+  }
+  if (result === "D") {
+    return "form-icon form-draw";
+  }
+  return "form-icon form-empty";
+}
+
 function isLikelyNationalTeam(team, queryLower) {
   const teamName = normalizeTeamName(team.strTeam || "");
   const league = normalizeTeamName(team.strLeague || "");
@@ -549,6 +589,7 @@ function fixtureMatchScore(event, homeTeam, awayTeam) {
 
 export default function App() {
   const [fields, setFields] = useState(initialFields);
+  const [homeFormResults, setHomeFormResults] = useState(DEFAULT_HOME_FORM_RESULTS);
   const [loadedFixtures, setLoadedFixtures] = useState([]);
   const [selectedFixture, setSelectedFixture] = useState("0");
   const [apiStatus, setApiStatus] = useState("Data source: TheSportsDB public API");
@@ -678,6 +719,12 @@ export default function App() {
         updatedActive.homeId,
         updatedActive.awayId
       );
+
+      const nextHomeFormResults = normalizeFormResults(homeRows.slice(0, 5).map((row) => row.outcome));
+      const nextHomeFormPoints = formPointsFromResults(nextHomeFormResults);
+
+      setHomeFormResults(nextHomeFormResults);
+      setFields((prev) => ({ ...prev, formA: nextHomeFormPoints }));
 
       setHistory({ home: homeRows, away: awayRows, h2h: h2hRows });
 
@@ -985,15 +1032,14 @@ export default function App() {
           <div className="metrics-grid">
             <div>
               <label htmlFor="formA">Home Form (last 5)</label>
-              <input
-                id="formA"
-                type="number"
-                min="0"
-                max="15"
-                value={fields.formA}
-                onChange={(e) => updateField("formA", Number(e.target.value))}
-              />
-              <small>Points out of 15</small>
+              <div id="formA" className="form-icons" role="img" aria-label={`Home form last five: ${homeFormResults.join(" ")}`}>
+                {homeFormResults.map((result, index) => (
+                  <span key={`home-form-${index}`} className={formIconClass(result)}>
+                    {result}
+                  </span>
+                ))}
+              </div>
+              <small>Auto-calculated from last 5 results (W=3, D=1, L=0)</small>
             </div>
             <div>
               <label htmlFor="formB">Away Form (last 5)</label>

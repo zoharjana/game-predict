@@ -131,6 +131,46 @@ small {
   font-size: 0.75rem;
 }
 
+.form-icons {
+  display: flex;
+  gap: 6px;
+  min-height: 42px;
+  align-items: center;
+}
+
+.form-icon {
+  width: 28px;
+  height: 24px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.84rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+
+.form-win {
+  color: #e9fff1;
+  background: #16a34a;
+}
+
+.form-draw {
+  color: #2b2408;
+  background: #ffd166;
+}
+
+.form-loss {
+  color: #ffeceb;
+  background: #dc2626;
+}
+
+.form-empty {
+  color: #a7b8c2;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
 .api-status {
   margin: 0;
   min-height: 42px;
