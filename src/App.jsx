@@ -1,10 +1,7 @@
 import React, { useMemo, useState } from "react";
 import "./styles.css";
 
-const API_BASES = [
-  "https://www.thesportsdb.com/api/v1/json/3",
-  "https://www.thesportsdb.com/api/v1/json/123"
-];
+const FD_API_BASE = "https://api.football-data.org/v4";
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 const FIFA_RANKING_API = "https://api.fifa.com/api/v3/fifarankings/rankings/live?gender=1&sportType=0&language=en";
 
@@ -12,6 +9,7 @@ let fifaRankingCachePromise = null;
 let fifaRankingCache = null;
 
 const initialFields = {
+  fdApiKey: "3a68eb2a8bb944b18e82a7bd940a3bbb",
   nationQuery: "France",
   oddsApiKey: "",
   teamA: "Falcons FC",
@@ -139,34 +137,34 @@ async function fetchJson(url) {
   throw normalizeFetchError(lastError);
 }
 
-async function fetchSportsDbViaProxy(fullUrl) {
-  return fetchJsonViaProxies(fullUrl);
-}
+async function fetchFD(path, apiKey) {
+  const url = `${FD_API_BASE}${path}`;
+  const timeoutMs = 12000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-async function fetchSportsDb(path) {
-  const errors = [];
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      cache: "no-store",
+      headers: { "X-Auth-Token": apiKey }
+    });
 
-  for (const base of API_BASES) {
-    const fullUrl = `${base}${path}`;
-
-    try {
-      return await fetchJson(fullUrl);
-    } catch (error) {
-      errors.push(error);
-
-      // On browser CORS failures, try trusted read-through proxies for public data endpoints.
-      const msg = String((error && error.message) || "").toLowerCase();
-      if (msg.includes("network/cors") || msg.includes("failed to fetch")) {
-        try {
-          return await fetchSportsDbViaProxy(fullUrl);
-        } catch (proxyError) {
-          errors.push(proxyError);
-        }
-      }
+    if (!response.ok) {
+      throw new Error(`Request failed (${response.status})`);
     }
-  }
 
-  throw errors[errors.length - 1] || new Error("Could not reach TheSportsDB.");
+    const raw = await response.text();
+    try {
+      return JSON.parse(raw);
+    } catch (_error) {
+      throw new Error("Unexpected response format from football-data.org.");
+    }
+  } catch (error) {
+    throw normalizeFetchError(error);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function formatDateLabel(value) {
@@ -584,110 +582,76 @@ function isLikelyNationalTeam(team, queryLower) {
   );
 }
 
-async function findNationalTeam(query) {
-  const cleanedQuery = sanitizeNationalQuery(query);
-  const payload = await fetchSportsDb(`/searchteams.php?t=${encodeURIComponent(cleanedQuery)}`);
-  const allTeams = payload.teams || [];
+function normalizeFDMatch(match, teamId) {
+  const homeScore = match.score?.fullTime?.home ?? null;
+  const awayScore = match.score?.fullTime?.away ?? null;
 
-  if (allTeams.length === 0) {
-    throw new Error(`No teams found for ${cleanedQuery}. Try a country name like France or Mexico.`);
+  if (homeScore === null || awayScore === null) {
+    return null;
   }
 
-  const soccerTeams = allTeams.filter((team) => {
-    const sport = String(team.strSport || "").toLowerCase();
-    return sport.includes("soccer") || sport.includes("football");
-  });
-  const candidates = soccerTeams.length > 0 ? soccerTeams : allTeams;
+  const isHome = String(match.homeTeam?.id) === String(teamId);
+  const goalsFor = isHome ? homeScore : awayScore;
+  const goalsAgainst = isHome ? awayScore : homeScore;
+  const date = new Date(match.utcDate || "");
 
-  const queryLower = normalizeTeamName(cleanedQuery);
-  const exactNational = candidates.find(
-    (team) => normalizeTeamName(team.strTeam) === queryLower && isLikelyNationalTeam(team, queryLower)
+  return {
+    idEvent: String(match.id),
+    sortTs: Number.isNaN(date.getTime()) ? 0 : date.getTime(),
+    dateLabel: formatDateLabel(match.utcDate),
+    fixtureLabel: `${match.homeTeam?.name || "Home"} vs ${match.awayTeam?.name || "Away"}`,
+    scoreLabel: `${homeScore} - ${awayScore}`,
+    leagueName: match.competition?.name || "",
+    goalsFor,
+    goalsAgainst,
+    outcome: getOutcomeFromPerspective(goalsFor, goalsAgainst),
+    homeTeam: match.homeTeam?.name || "Home",
+    awayTeam: match.awayTeam?.name || "Away",
+    homeTeamId: String(match.homeTeam?.id || ""),
+    awayTeamId: String(match.awayTeam?.id || "")
+  };
+}
+
+function normalizeFDFixture(match) {
+  return {
+    idEvent: String(match.id),
+    dateEvent: match.utcDate ? match.utcDate.split("T")[0] : "",
+    strTimestamp: match.utcDate || "",
+    strHomeTeam: match.homeTeam?.name || "TBD",
+    strAwayTeam: match.awayTeam?.name || "TBD",
+    idHomeTeam: String(match.homeTeam?.id || ""),
+    idAwayTeam: String(match.awayTeam?.id || "")
+  };
+}
+
+async function findTeamFD(query, apiKey) {
+  const payload = await fetchFD(`/teams?name=${encodeURIComponent(query)}&limit=10`, apiKey);
+  const teams = payload.teams || [];
+
+  if (teams.length === 0) {
+    throw new Error(`No team found for "${query}". Try a different name.`);
+  }
+
+  const queryNorm = normalizeTeamName(query);
+  const exact = teams.find(
+    (t) => normalizeTeamName(t.name || "") === queryNorm || normalizeTeamName(t.shortName || "") === queryNorm
   );
-  if (exactNational) {
-    return exactNational;
-  }
-
-  const nationalMatch = candidates.find((team) => isLikelyNationalTeam(team, queryLower));
-  if (nationalMatch) {
-    return nationalMatch;
-  }
-
-  const fuzzy = candidates.find((team) => {
-    const name = normalizeTeamName(team.strTeam || "");
-    return name.includes(queryLower) || queryLower.includes(name);
-  });
-
-  if (fuzzy) {
-    return fuzzy;
-  }
-
-  throw new Error(`No national team matched ${cleanedQuery}. Try a country name only.`);
+  return exact || teams[0];
 }
 
-async function getTeamDetails(teamId) {
-  const payload = await fetchSportsDb(`/lookupteam.php?id=${encodeURIComponent(teamId)}`);
-  return payload.teams && payload.teams[0] ? payload.teams[0] : null;
-}
-
-async function fetchTeamMatches(teamId) {
+async function fetchTeamMatchesFD(teamId, apiKey) {
   if (!teamId) {
     return [];
   }
 
-  const seed = await fetchSportsDb(`/eventslast.php?id=${encodeURIComponent(teamId)}`);
-  const team = await getTeamDetails(teamId);
-  const teamNameNorm = normalizeTeamName((team && team.strTeam) || "");
-  const leagueIds = team ? extractLeagueIds(team) : [];
-  const seasons = buildSeasonCandidates(new Date().getFullYear(), 5);
-  const unique = new Map();
+  const payload = await fetchFD(
+    `/teams/${encodeURIComponent(teamId)}/matches?status=FINISHED&limit=10`,
+    apiKey
+  );
 
-  (seed.results || []).forEach((event) => {
-    if (!isOfficialCompetitionEvent(event)) {
-      return;
-    }
-
-    const row = normalizeMatchEvent(event, teamId);
-    if (row) {
-      unique.set(String(row.idEvent || `${row.dateLabel}-${row.fixtureLabel}`), row);
-    }
-  });
-
-  for (const season of seasons) {
-    for (const leagueId of leagueIds) {
-      let events = [];
-      try {
-        const seasonPayload = await fetchSportsDb(
-          `/eventsseason.php?id=${encodeURIComponent(leagueId)}&s=${encodeURIComponent(season)}`
-        );
-        events = seasonPayload.events || [];
-      } catch (_error) {
-        events = [];
-      }
-
-      events
-        .filter((event) => matchesTeam(event, teamId, teamNameNorm) && isOfficialCompetitionEvent(event))
-        .forEach((event) => {
-          const row = normalizeMatchEvent(event, teamId);
-          if (!row) {
-            return;
-          }
-          const key = String(row.idEvent || `${row.dateLabel}-${row.fixtureLabel}`);
-          if (!unique.has(key)) {
-            unique.set(key, row);
-          }
-        });
-
-      if (unique.size >= 10) {
-        break;
-      }
-    }
-
-    if (unique.size >= 10) {
-      break;
-    }
-  }
-
-  return Array.from(unique.values())
+  return (payload.matches || [])
+    .map((match) => normalizeFDMatch(match, teamId))
+    .filter(Boolean)
     .sort((a, b) => b.sortTs - a.sortTs)
     .slice(0, 10);
 }
@@ -800,7 +764,7 @@ export default function App() {
   const [awayFormEntries, setAwayFormEntries] = useState(createEmptyFormEntries(FORM_ICON_COUNT));
   const [loadedFixtures, setLoadedFixtures] = useState([]);
   const [selectedFixture, setSelectedFixture] = useState("0");
-  const [apiStatus, setApiStatus] = useState("Data source: TheSportsDB public API");
+  const [apiStatus, setApiStatus] = useState("Data source: football-data.org");
   const [historyStatus, setHistoryStatus] = useState("Load a fixture to view recent form and H2H.");
   const [marketOdds, setMarketOdds] = useState({
     home: "-",
@@ -916,27 +880,26 @@ export default function App() {
       let resolvedAwayId = nextActive.awayId;
 
       if (!resolvedHomeId) {
-        const team = await findNationalTeam(homeName);
-        resolvedHomeId = team.idTeam;
-      }
+      const team = await findTeamFD(homeName, nextFields.fdApiKey);
+      resolvedHomeId = team.id;
+    }
 
-      if (!resolvedAwayId) {
-        const team = await findNationalTeam(awayName);
-        resolvedAwayId = team.idTeam;
-      }
+    if (!resolvedAwayId) {
+      const team = await findTeamFD(awayName, nextFields.fdApiKey);
+      resolvedAwayId = team.id;
+    }
 
-      const updatedActive = {
-        homeId: resolvedHomeId,
-        awayId: resolvedAwayId,
-        homeName,
-        awayName
-      };
-      setActiveTeams(updatedActive);
+    const updatedActive = {
+      homeId: resolvedHomeId,
+      awayId: resolvedAwayId,
+      homeName,
+      awayName
+    };
+    setActiveTeams(updatedActive);
 
-      const [homeRows, awayRows, fifaRanks] = await Promise.all([
-        fetchTeamMatches(updatedActive.homeId),
-        fetchTeamMatches(updatedActive.awayId),
-        fetchFifaRankLookup()
+    const [homeRows, awayRows, fifaRanks] = await Promise.all([
+      fetchTeamMatchesFD(updatedActive.homeId, nextFields.fdApiKey),
+      fetchTeamMatchesFD(updatedActive.awayId, nextFields.fdApiKey),
       ]);
 
       setTeamRanks({
@@ -985,54 +948,20 @@ export default function App() {
     }
   }
 
-  async function getRecentTeamMetrics(teamId) {
-    const payload = await fetchSportsDb(`/eventslast.php?id=${encodeURIComponent(teamId)}`);
-    const events = payload.results || [];
-    const quickRows = [];
+  async function getRecentTeamMetrics(teamId, apiKey) {
+    const rows = await fetchTeamMatchesFD(teamId, apiKey);
+    const formEntries = buildFormEntries(rows, FORM_ICON_COUNT);
 
-    let points = 0;
-    let goalsForTotal = 0;
-    let counted = 0;
-
-    events
-      .filter((event) => isOfficialCompetitionEvent(event))
-      .slice(0, 10)
-      .forEach((event) => {
-      const homeScore = asNumber(event.intHomeScore, null);
-      const awayScore = asNumber(event.intAwayScore, null);
-
-      if (homeScore === null || awayScore === null) {
-        return;
-      }
-
-      const isHome = String(event.idHomeTeam) === String(teamId);
-      const goalsFor = isHome ? homeScore : awayScore;
-      const goalsAgainst = isHome ? awayScore : homeScore;
-
-      goalsForTotal += goalsFor;
-      counted += 1;
-
-      const row = normalizeMatchEvent(event, teamId);
-      if (row) {
-        quickRows.push(row);
-      }
-
-      if (goalsFor > goalsAgainst) {
-        points += 3;
-      } else if (goalsFor === goalsAgainst) {
-        points += 1;
-      }
-      });
-
-    const formEntries = buildFormEntries(quickRows, FORM_ICON_COUNT);
-
-    if (counted === 0) {
+    if (rows.length === 0) {
       return { formPoints: 14, avgGoals: 1.2, formEntries };
     }
 
+    const formPoints = formPointsFromEntries(formEntries);
+    const goalsTotal = rows.reduce((total, row) => total + asNumber(row.goalsFor, 0), 0);
+
     return {
-      formPoints: clamp(points, 0, 30),
-      avgGoals: clamp(goalsForTotal / counted, 0, 6),
+      formPoints: clamp(formPoints, 0, 30),
+      avgGoals: clamp(goalsTotal / rows.length, 0, 6),
       formEntries
     };
   }
@@ -1052,8 +981,8 @@ export default function App() {
     setApiStatus(`Loading recent stats for ${nextFields.teamA} and ${nextFields.teamB}...`);
 
     const [homeMetrics, awayMetrics] = await Promise.all([
-      getRecentTeamMetrics(fixture.idHomeTeam),
-      getRecentTeamMetrics(fixture.idAwayTeam)
+      getRecentTeamMetrics(fixture.idHomeTeam, fields.fdApiKey),
+      getRecentTeamMetrics(fixture.idAwayTeam, fields.fdApiKey)
     ]);
 
     const updatedFields = {
@@ -1077,35 +1006,42 @@ export default function App() {
     setFields(updatedFields);
     setActiveTeams(updatedActive);
     await refreshMatchHistory(updatedActive, updatedFields);
-    setApiStatus(`Loaded ${updatedFields.teamA} vs ${updatedFields.teamB} from TheSportsDB.`);
+    setApiStatus(`Loaded ${updatedFields.teamA} vs ${updatedFields.teamB} from football-data.org.`);
   }
 
   async function loadNationalFixtures() {
     const query = sanitizeNationalQuery(fields.nationQuery);
+    const apiKey = fields.fdApiKey.trim();
+
     if (!query) {
-      setApiStatus("Enter a national team name first (example: France, Brazil, Japan).");
+      setApiStatus("Enter a team or club name first (example: France, Arsenal, Bayern Munich).");
+      return;
+    }
+
+    if (!apiKey) {
+      setApiStatus("Enter your football-data.org API key first.");
       return;
     }
 
     try {
-      setApiStatus(`Searching national team data for ${query}...`);
-      const team = await findNationalTeam(query);
-      const payload = await fetchSportsDb(`/eventsnext.php?id=${encodeURIComponent(team.idTeam)}`);
-      const fixtures = payload.events || [];
+      setApiStatus(`Searching for ${query}...`);
+      const team = await findTeamFD(query, apiKey);
+      const payload = await fetchFD(
+        `/teams/${team.id}/matches?status=SCHEDULED&limit=10`,
+        apiKey
+      );
+      const fixtures = (payload.matches || []).map(normalizeFDFixture);
       setLoadedFixtures(fixtures);
       setSelectedFixture("0");
 
       if (fixtures.length === 0) {
-        setApiStatus(`No upcoming fixtures found for ${team.strTeam}. Try another team.`);
+        setApiStatus(`No upcoming fixtures for ${team.name || query}. Try another team.`);
         return;
       }
 
       await applyFixture(0, fixtures);
     } catch (error) {
-      setApiStatus(`Could not load API data: ${error.message}`);
-      if (String(error.message || "").toLowerCase().includes("network/cors")) {
-        setHistoryStatus("Tip: serve this page with a local server (example: python -m http.server 5173).");
-      }
+      setApiStatus(`Could not load fixtures: ${error.message}`);
     }
   }
 
@@ -1208,7 +1144,21 @@ export default function App() {
         <section className="panel input-panel" aria-label="Prediction input">
           <div className="api-grid">
             <div>
-              <label htmlFor="nationQuery">National Team</label>
+              <label htmlFor="fdApiKey">football-data.org API Key</label>
+              <input
+                id="fdApiKey"
+                type="password"
+                value={fields.fdApiKey}
+                onChange={(e) => updateField("fdApiKey", e.target.value)}
+                placeholder="Paste your API key"
+              />
+              <small>Get one free at football-data.org</small>
+            </div>
+          </div>
+
+          <div className="api-grid">
+            <div>
+              <label htmlFor="nationQuery">Team or Club</label>
               <input
                 id="nationQuery"
                 type="text"
