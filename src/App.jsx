@@ -273,6 +273,39 @@ function formatDateLabel(value) {
   return `${day}.${month}.${year}`;
 }
 
+function getTodayIsoDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatKickoffLabel(event) {
+  if (event.strTime) {
+    return event.strTime;
+  }
+
+  if (event.strTimestamp) {
+    const kickoff = new Date(event.strTimestamp);
+    if (!Number.isNaN(kickoff.getTime())) {
+      return kickoff.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+      });
+    }
+  }
+
+  return "TBD";
+}
+
+function getEventSortTimestamp(event) {
+  const raw = event.strTimestamp || event.dateEvent || "";
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? Number.MAX_SAFE_INTEGER : parsed.getTime();
+}
+
 function getOutcomeFromPerspective(goalsFor, goalsAgainst) {
   if (goalsFor > goalsAgainst) {
     return "W";
