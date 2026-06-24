@@ -1,13 +1,19 @@
 import React, { useEffect, useMemo, useState } from "react";
 import "./styles.css";
 
-const API_BASES = [
+const FD_API_BASE = "https://api.football-data.org/v4";
+const SPORTSDB_BASES = [
   "https://www.thesportsdb.com/api/v1/json/3",
   "https://www.thesportsdb.com/api/v1/json/123"
 ];
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
+const FIFA_RANKING_API = "https://api.fifa.com/api/v3/fifarankings/rankings/live?gender=1&sportType=0&language=en";
+
+let fifaRankingCachePromise = null;
+let fifaRankingCache = null;
 
 const initialFields = {
+  fdApiKey: "3a68eb2a8bb944b18e82a7bd940a3bbb",
   nationQuery: "France",
   oddsApiKey: "",
   teamA: "Falcons FC",
@@ -79,6 +85,24 @@ function normalizeFetchError(error) {
   return error instanceof Error ? error : new Error("Unknown network error.");
 }
 
+async function fetchJsonViaProxies(fullUrl) {
+  const proxies = [
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(fullUrl)}`,
+    `https://corsproxy.io/?${encodeURIComponent(fullUrl)}`
+  ];
+
+  const errors = [];
+  for (const proxyUrl of proxies) {
+    try {
+      return await fetchJson(proxyUrl);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  throw errors[errors.length - 1] || new Error("Proxy fallback failed.");
+}
+
 async function fetchJson(url) {
   const timeoutMs = 12000;
   const retries = 1;
@@ -117,48 +141,120 @@ async function fetchJson(url) {
   throw normalizeFetchError(lastError);
 }
 
-async function fetchSportsDbViaProxy(fullUrl) {
-  const proxies = [
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(fullUrl)}`,
-    `https://corsproxy.io/?${encodeURIComponent(fullUrl)}`
-  ];
+async function fetchFD(path, apiKey) {
+  const url = `${FD_API_BASE}${path}`;
+  const timeoutMs = 12000;
 
-  const errors = [];
-  for (const proxyUrl of proxies) {
+  const request = async (requestUrl) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
-      return await fetchJson(proxyUrl);
-    } catch (error) {
-      errors.push(error);
-    }
-  }
+      const response = await fetch(requestUrl, {
+        signal: controller.signal,
+        cache: "no-store",
+        headers: { "X-Auth-Token": apiKey }
+      });
 
-  throw errors[errors.length - 1] || new Error("CORS proxy fallback failed.");
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+      }
+
+      const raw = await response.text();
+      try {
+        return JSON.parse(raw);
+      } catch (_error) {
+        throw new Error("Unexpected response format from football-data.org.");
+      }
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+
+  try {
+    return await request(url);
+  } catch (error) {
+    const message = String((error && error.message) || "").toLowerCase();
+    const isNetworkOrCors = error instanceof TypeError || message.includes("failed to fetch") || message.includes("network/cors");
+
+    if (!isNetworkOrCors) {
+      throw normalizeFetchError(error);
+    }
+
+    const proxyUrls = [
+      `https://corsproxy.io/?${encodeURIComponent(url)}`,
+      `https://cors.isomorphic-git.org/${url}`
+    ];
+
+    const proxyErrors = [error];
+    for (const proxyUrl of proxyUrls) {
+      try {
+        return await request(proxyUrl);
+      } catch (proxyError) {
+        proxyErrors.push(proxyError);
+      }
+    }
+
+    throw normalizeFetchError(proxyErrors[proxyErrors.length - 1]);
+  }
 }
 
 async function fetchSportsDb(path) {
   const errors = [];
 
-  for (const base of API_BASES) {
+  for (const base of SPORTSDB_BASES) {
     const fullUrl = `${base}${path}`;
-
     try {
       return await fetchJson(fullUrl);
     } catch (error) {
       errors.push(error);
-
-      // On browser CORS failures, try trusted read-through proxies for public data endpoints.
-      const msg = String((error && error.message) || "").toLowerCase();
-      if (msg.includes("network/cors") || msg.includes("failed to fetch")) {
-        try {
-          return await fetchSportsDbViaProxy(fullUrl);
-        } catch (proxyError) {
-          errors.push(proxyError);
-        }
+      try {
+        return await fetchJsonViaProxies(fullUrl);
+      } catch (proxyError) {
+        errors.push(proxyError);
       }
     }
   }
 
-  throw errors[errors.length - 1] || new Error("Could not reach TheSportsDB.");
+  throw errors[errors.length - 1] || new Error("Could not load fallback match history.");
+}
+
+async function fetchTeamMatchesSportsDbByName(teamName) {
+  const query = sanitizeNationalQuery(teamName || "");
+  if (!query) {
+    return [];
+  }
+
+  const searchPayload = await fetchSportsDb(`/searchteams.php?t=${encodeURIComponent(query)}`);
+  const teams = searchPayload.teams || [];
+  if (teams.length === 0) {
+    return [];
+  }
+
+  const teamNorm = normalizeTeamName(query);
+  const soccerTeams = teams.filter((team) => {
+    const sport = String(team.strSport || "").toLowerCase();
+    return sport.includes("soccer") || sport.includes("football");
+  });
+  const candidates = soccerTeams.length > 0 ? soccerTeams : teams;
+  const selected =
+    candidates.find((team) => normalizeTeamName(team.strTeam || "") === teamNorm) ||
+    candidates.find((team) => normalizeTeamName(team.strTeam || "").includes(teamNorm)) ||
+    candidates[0];
+
+  if (!selected?.idTeam) {
+    return [];
+  }
+
+  const eventsPayload = await fetchSportsDb(`/eventslast.php?id=${encodeURIComponent(selected.idTeam)}`);
+  const rows = (eventsPayload.results || [])
+    .filter((event) => isOfficialCompetitionEvent(event))
+    .map((event) => normalizeMatchEvent(event, selected.idTeam))
+    .filter(Boolean)
+    .sort((a, b) => b.sortTs - a.sortTs)
+    .slice(0, 10);
+
+  return rows;
 }
 
 function formatDateLabel(value) {
@@ -175,39 +271,6 @@ function formatDateLabel(value) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const year = String(date.getFullYear()).slice(-2);
   return `${day}.${month}.${year}`;
-}
-
-function getTodayIsoDate() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function formatKickoffLabel(event) {
-  if (event.strTime) {
-    return event.strTime;
-  }
-
-  if (event.strTimestamp) {
-    const kickoff = new Date(event.strTimestamp);
-    if (!Number.isNaN(kickoff.getTime())) {
-      return kickoff.toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false
-      });
-    }
-  }
-
-  return "TBD";
-}
-
-function getEventSortTimestamp(event) {
-  const primary = event.strTimestamp || event.dateEvent;
-  const date = new Date(primary || "");
-  return Number.isNaN(date.getTime()) ? Number.MAX_SAFE_INTEGER : date.getTime();
 }
 
 function getOutcomeFromPerspective(goalsFor, goalsAgainst) {
@@ -317,7 +380,7 @@ function expectedGoalsToScore(goals) {
   return 4;
 }
 
-function buildInsights(values, metrics) {
+function buildInsights(values, metrics, ranks) {
   const insights = [];
 
   if (values.formA > values.formB + 2) {
@@ -332,6 +395,16 @@ function buildInsights(values, metrics) {
     insights.push(`${values.teamA} shows higher attacking output.`);
   } else if (values.goalsB > values.goalsA + 0.4) {
     insights.push(`${values.teamB} is creating more scoring volume.`);
+  }
+
+  if (ranks.home && ranks.away) {
+    if (ranks.home.rank < ranks.away.rank) {
+      insights.push(`${values.teamA} has the better FIFA ranking.`);
+    } else if (ranks.away.rank < ranks.home.rank) {
+      insights.push(`${values.teamB} has the better FIFA ranking.`);
+    } else {
+      insights.push("Both teams are level on FIFA ranking.");
+    }
   }
 
   if (values.injuriesA !== values.injuriesB) {
@@ -453,106 +526,187 @@ function isLikelyNationalTeam(team, queryLower) {
   );
 }
 
-async function findNationalTeam(query) {
-  const cleanedQuery = sanitizeNationalQuery(query);
-  const payload = await fetchSportsDb(`/searchteams.php?t=${encodeURIComponent(cleanedQuery)}`);
-  const allTeams = payload.teams || [];
+function normalizeFDMatch(match, teamId) {
+  const homeScore = match.score?.fullTime?.home ?? null;
+  const awayScore = match.score?.fullTime?.away ?? null;
 
-  if (allTeams.length === 0) {
-    throw new Error(`No teams found for ${cleanedQuery}. Try a country name like France or Mexico.`);
+  if (homeScore === null || awayScore === null) {
+    return null;
   }
 
-  const soccerTeams = allTeams.filter((team) => {
-    const sport = String(team.strSport || "").toLowerCase();
-    return sport.includes("soccer") || sport.includes("football");
-  });
-  const candidates = soccerTeams.length > 0 ? soccerTeams : allTeams;
+  const isHome = String(match.homeTeam?.id) === String(teamId);
+  const goalsFor = isHome ? homeScore : awayScore;
+  const goalsAgainst = isHome ? awayScore : homeScore;
+  const date = new Date(match.utcDate || "");
 
-  const queryLower = normalizeTeamName(cleanedQuery);
-  const exactNational = candidates.find(
-    (team) => normalizeTeamName(team.strTeam) === queryLower && isLikelyNationalTeam(team, queryLower)
+  return {
+    idEvent: String(match.id),
+    sortTs: Number.isNaN(date.getTime()) ? 0 : date.getTime(),
+    dateLabel: formatDateLabel(match.utcDate),
+    fixtureLabel: `${match.homeTeam?.name || "Home"} vs ${match.awayTeam?.name || "Away"}`,
+    scoreLabel: `${homeScore} - ${awayScore}`,
+    leagueName: match.competition?.name || "",
+    goalsFor,
+    goalsAgainst,
+    outcome: getOutcomeFromPerspective(goalsFor, goalsAgainst),
+    homeTeam: match.homeTeam?.name || "Home",
+    awayTeam: match.awayTeam?.name || "Away",
+    homeTeamId: String(match.homeTeam?.id || ""),
+    awayTeamId: String(match.awayTeam?.id || "")
+  };
+}
+
+function normalizeFDFixture(match) {
+  return {
+    idEvent: String(match.id),
+    dateEvent: match.utcDate ? match.utcDate.split("T")[0] : "",
+    strTimestamp: match.utcDate || "",
+    strHomeTeam: match.homeTeam?.name || "TBD",
+    strAwayTeam: match.awayTeam?.name || "TBD",
+    idHomeTeam: String(match.homeTeam?.id || ""),
+    idAwayTeam: String(match.awayTeam?.id || "")
+  };
+}
+
+// Competitions available on the free tier grouped by priority
+const FD_COMPETITION_GROUPS = [
+  ["WC", "EC"],                     // national teams
+  ["PL", "BL1", "SA", "FL1", "PD"], // top 5 leagues
+  ["CL", "ELC", "DED", "PPL"]      // cups + other leagues
+];
+const FD_COMP_CODES = Array.from(new Set(FD_COMPETITION_GROUPS.flat()));
+
+async function findTeamFD(query, apiKey) {
+  const queryNorm = normalizeTeamName(query);
+
+  function matchTeam(t) {
+    const name = normalizeTeamName(t.name || "");
+    const short = normalizeTeamName(t.shortName || "");
+    const tla = (t.tla || "").toLowerCase();
+    return (
+      name === queryNorm ||
+      short === queryNorm ||
+      tla === queryNorm ||
+      name.includes(queryNorm) ||
+      queryNorm.includes(name)
+    );
+  }
+
+  for (const group of FD_COMPETITION_GROUPS) {
+    const results = await Promise.allSettled(
+      group.map((comp) => fetchFD(`/competitions/${comp}/teams`, apiKey))
+    );
+
+    for (const result of results) {
+      if (result.status !== "fulfilled") {
+        continue;
+      }
+      const match = (result.value.teams || []).find(matchTeam);
+      if (match) {
+        return match;
+      }
+    }
+  }
+
+  // Fallback: infer team from scheduled matches when competition team lists are incomplete.
+  const today = new Date();
+  const dateFrom = today.toISOString().slice(0, 10);
+  const horizon = new Date(today);
+  horizon.setDate(horizon.getDate() + 365);
+  const dateTo = horizon.toISOString().slice(0, 10);
+  const matchesPayload = await fetchFD(
+    `/matches?status=SCHEDULED&dateFrom=${dateFrom}&dateTo=${dateTo}`,
+    apiKey
   );
-  if (exactNational) {
-    return exactNational;
-  }
 
-  const nationalMatch = candidates.find((team) => isLikelyNationalTeam(team, queryLower));
-  if (nationalMatch) {
-    return nationalMatch;
-  }
-
-  const fuzzy = candidates.find((team) => {
-    const name = normalizeTeamName(team.strTeam || "");
-    return name.includes(queryLower) || queryLower.includes(name);
+  const inferred = (matchesPayload.matches || []).find((m) => {
+    const home = normalizeTeamName(m.homeTeam?.name || "");
+    const away = normalizeTeamName(m.awayTeam?.name || "");
+    return home === queryNorm || away === queryNorm || home.includes(queryNorm) || away.includes(queryNorm);
   });
 
-  if (fuzzy) {
-    return fuzzy;
+  if (inferred?.homeTeam && normalizeTeamName(inferred.homeTeam.name || "").includes(queryNorm)) {
+    return inferred.homeTeam;
+  }
+  if (inferred?.awayTeam) {
+    return inferred.awayTeam;
   }
 
-  throw new Error(`No national team matched ${cleanedQuery}. Try a country name only.`);
+  throw new Error(`No team found for "${query}". Try a full team or country name.`);
 }
 
-async function getTeamDetails(teamId) {
-  const payload = await fetchSportsDb(`/lookupteam.php?id=${encodeURIComponent(teamId)}`);
-  return payload.teams && payload.teams[0] ? payload.teams[0] : null;
-}
-
-async function fetchTeamMatches(teamId) {
+async function fetchTeamMatchesFD(teamId, apiKey, teamName = "") {
   if (!teamId) {
     return [];
   }
 
-  const seed = await fetchSportsDb(`/eventslast.php?id=${encodeURIComponent(teamId)}`);
-  const team = await getTeamDetails(teamId);
-  const teamNameNorm = normalizeTeamName((team && team.strTeam) || "");
-  const leagueIds = team ? extractLeagueIds(team) : [];
-  const seasons = buildSeasonCandidates(new Date().getFullYear(), 5);
   const unique = new Map();
+  const teamIdStr = String(teamId);
+  const teamNorm = normalizeTeamName(teamName);
+  const today = new Date();
+  const dateTo = today.toISOString().slice(0, 10);
+  const from = new Date(today);
+  from.setFullYear(from.getFullYear() - 2);
+  const dateFrom = from.toISOString().slice(0, 10);
 
-  (seed.results || []).forEach((event) => {
-    if (!isOfficialCompetitionEvent(event)) {
-      return;
-    }
-
-    const row = normalizeMatchEvent(event, teamId);
-    if (row) {
-      unique.set(String(row.idEvent || `${row.dateLabel}-${row.fixtureLabel}`), row);
-    }
-  });
-
-  for (const season of seasons) {
-    for (const leagueId of leagueIds) {
-      let events = [];
-      try {
-        const seasonPayload = await fetchSportsDb(
-          `/eventsseason.php?id=${encodeURIComponent(leagueId)}&s=${encodeURIComponent(season)}`
-        );
-        events = seasonPayload.events || [];
-      } catch (_error) {
-        events = [];
+  const addMatches = (matches) => {
+    (matches || []).forEach((match) => {
+      const homeId = String(match.homeTeam?.id || "");
+      const awayId = String(match.awayTeam?.id || "");
+      const homeNorm = normalizeTeamName(match.homeTeam?.name || "");
+      const awayNorm = normalizeTeamName(match.awayTeam?.name || "");
+      const byId = homeId === teamIdStr || awayId === teamIdStr;
+      const byName = teamNorm && (homeNorm === teamNorm || awayNorm === teamNorm || homeNorm.includes(teamNorm) || awayNorm.includes(teamNorm));
+      if (!byId && !byName) {
+        return;
       }
+      const row = normalizeFDMatch(match, teamIdStr);
+      if (!row) {
+        return;
+      }
+      if (!unique.has(row.idEvent)) {
+        unique.set(row.idEvent, row);
+      }
+    });
+  };
 
-      events
-        .filter((event) => matchesTeam(event, teamId, teamNameNorm) && isOfficialCompetitionEvent(event))
-        .forEach((event) => {
-          const row = normalizeMatchEvent(event, teamId);
-          if (!row) {
-            return;
-          }
-          const key = String(row.idEvent || `${row.dateLabel}-${row.fixtureLabel}`);
-          if (!unique.has(key)) {
-            unique.set(key, row);
-          }
-        });
+  try {
+    const payload = await fetchFD(
+      `/teams/${encodeURIComponent(teamId)}/matches?status=FINISHED&dateFrom=${dateFrom}&dateTo=${dateTo}`,
+      apiKey
+    );
+    addMatches(payload.matches || []);
+  } catch (_error) {
+    // Continue with competition fallback below.
+  }
 
+  if (unique.size < 10) {
+    for (const code of FD_COMP_CODES) {
+      try {
+        const payload = await fetchFD(
+          `/competitions/${encodeURIComponent(code)}/matches?status=FINISHED&dateFrom=${dateFrom}&dateTo=${dateTo}`,
+          apiKey
+        );
+        addMatches(payload.matches || []);
+      } catch (_error) {
+        // Ignore unavailable competitions and continue.
+      }
       if (unique.size >= 10) {
         break;
       }
     }
+  }
 
-    if (unique.size >= 10) {
-      break;
+  if (unique.size === 0 && teamName) {
+    try {
+      const fallbackRows = await fetchTeamMatchesSportsDbByName(teamName);
+      fallbackRows.forEach((row) => {
+        if (!unique.has(row.idEvent)) {
+          unique.set(row.idEvent, row);
+        }
+      });
+    } catch (_error) {
+      // Keep empty result if fallback source is also unavailable.
     }
   }
 
@@ -669,7 +823,7 @@ export default function App() {
   const [awayFormEntries, setAwayFormEntries] = useState(createEmptyFormEntries(FORM_ICON_COUNT));
   const [loadedFixtures, setLoadedFixtures] = useState([]);
   const [selectedFixture, setSelectedFixture] = useState("0");
-  const [apiStatus, setApiStatus] = useState("Data source: TheSportsDB public API");
+  const [apiStatus, setApiStatus] = useState("Data source: football-data.org");
   const [historyStatus, setHistoryStatus] = useState("Load a fixture to view recent form and H2H.");
   const [marketOdds, setMarketOdds] = useState({
     home: "-",
@@ -678,8 +832,6 @@ export default function App() {
     meta: "Load a fixture and fetch betting odds."
   });
   const [history, setHistory] = useState({ home: [], away: [], h2h: [] });
-  const [todaysGames, setTodaysGames] = useState([]);
-  const [todaysGamesStatus, setTodaysGamesStatus] = useState("Loading today's soccer games...");
   const [activeTeams, setActiveTeams] = useState({
     homeId: null,
     awayId: null,
@@ -703,8 +855,11 @@ export default function App() {
     const goalsDelta = (values.goalsA - values.goalsB) / 3;
     const injuryDelta = (values.injuriesB - values.injuriesA) / 11;
     const homeBoost = 0.12;
+    const homeRankStrength = fifaRankStrength(teamRanks.home?.rank);
+    const awayRankStrength = fifaRankStrength(teamRanks.away?.rank);
+    const rankDelta = homeRankStrength - awayRankStrength;
 
-    const advantage = formDelta * 0.55 + goalsDelta * 0.35 + injuryDelta * 0.25 + homeBoost;
+    const advantage = formDelta * 0.48 + goalsDelta * 0.3 + injuryDelta * 0.2 + homeBoost + rankDelta * 0.28;
     const homeRaw = toProbability(advantage);
     const awayRaw = 1 - homeRaw;
     const closeness = 1 - clamp(Math.abs(homeRaw - awayRaw) * 1.8, 0, 0.95);
@@ -718,8 +873,13 @@ export default function App() {
 
     const formImpact = (values.formA - values.formB) / 60;
     const injuryImpact = (values.injuriesB - values.injuriesA) / 22;
-    const expectedHomeGoals = clamp(xgA + formImpact * 0.35 + injuryImpact * 0.2 + homeBoost * 0.6, 0.1, 4.5);
-    const expectedAwayGoals = clamp(xgB - formImpact * 0.25 - injuryImpact * 0.15, 0.1, 4.5);
+    const rankGoalSwing = rankDelta * 0.2;
+    const expectedHomeGoals = clamp(
+      xgA + formImpact * 0.3 + injuryImpact * 0.16 + homeBoost * 0.5 + rankGoalSwing,
+      0.1,
+      4.5
+    );
+    const expectedAwayGoals = clamp(xgB - formImpact * 0.2 - injuryImpact * 0.12 - rankGoalSwing, 0.1, 4.5);
 
     const homeScore = expectedGoalsToScore(expectedHomeGoals);
     const awayScore = expectedGoalsToScore(expectedAwayGoals);
@@ -753,9 +913,19 @@ export default function App() {
       expectedReason: `xG ${expectedHomeGoals.toFixed(2)}-${expectedAwayGoals.toFixed(
         2
       )} after form/injury/home adjustments.`,
-      insights: buildInsights(values, { confidenceScore })
+      homeRankLabel: formatFifaRank(teamRanks.home),
+      awayRankLabel: formatFifaRank(teamRanks.away),
+      fixtureLabel: `${formatTeamWithRank(values.teamA, teamRanks.home)} vs ${formatTeamWithRank(
+        values.teamB,
+        teamRanks.away
+      )}`,
+      rankSummary:
+        `${values.teamA} ${formatFifaRank(teamRanks.home) || "FIFA rank n/a"} | ${values.teamB} ${
+          formatFifaRank(teamRanks.away) || "FIFA rank n/a"
+        }`,
+      insights: buildInsights(values, { confidenceScore }, teamRanks)
     };
-  }, [fields]);
+  }, [fields, teamRanks]);
 
   async function refreshMatchHistory(nextActive = activeTeams, nextFields = fields) {
     const homeName = nextFields.teamA.trim() || nextActive.homeName;
@@ -768,13 +938,13 @@ export default function App() {
       let resolvedAwayId = nextActive.awayId;
 
       if (!resolvedHomeId) {
-        const team = await findNationalTeam(homeName);
-        resolvedHomeId = team.idTeam;
+        const team = await findTeamFD(homeName, nextFields.fdApiKey);
+        resolvedHomeId = team.id;
       }
 
       if (!resolvedAwayId) {
-        const team = await findNationalTeam(awayName);
-        resolvedAwayId = team.idTeam;
+        const team = await findTeamFD(awayName, nextFields.fdApiKey);
+        resolvedAwayId = team.id;
       }
 
       const updatedActive = {
@@ -785,10 +955,16 @@ export default function App() {
       };
       setActiveTeams(updatedActive);
 
-      const [homeRows, awayRows] = await Promise.all([
-        fetchTeamMatches(updatedActive.homeId),
-        fetchTeamMatches(updatedActive.awayId)
+      const [homeRows, awayRows, fifaRanks] = await Promise.all([
+        fetchTeamMatchesFD(updatedActive.homeId, nextFields.fdApiKey, homeName),
+        fetchTeamMatchesFD(updatedActive.awayId, nextFields.fdApiKey, awayName),
+        fetchFifaRankLookup()
       ]);
+
+      setTeamRanks({
+        home: findFifaRankForTeam(homeName, fifaRanks),
+        away: findFifaRankForTeam(awayName, fifaRanks)
+      });
 
       const h2hRows = extractHeadToHead(
         homeRows,
@@ -825,59 +1001,26 @@ export default function App() {
         setHistoryStatus("Recent form and head-to-head loaded (last 10 each).");
       }
     } catch (error) {
+      setTeamRanks({ home: null, away: null });
       setHistory({ home: [], away: [], h2h: [] });
       setHistoryStatus(`History load failed: ${error.message}`);
     }
   }
 
-  async function getRecentTeamMetrics(teamId) {
-    const payload = await fetchSportsDb(`/eventslast.php?id=${encodeURIComponent(teamId)}`);
-    const events = payload.results || [];
-    const quickRows = [];
+  async function getRecentTeamMetrics(teamId, apiKey, teamName = "") {
+    const rows = await fetchTeamMatchesFD(teamId, apiKey, teamName);
+    const formEntries = buildFormEntries(rows, FORM_ICON_COUNT);
 
-    let points = 0;
-    let goalsForTotal = 0;
-    let counted = 0;
-
-    events
-      .filter((event) => isOfficialCompetitionEvent(event))
-      .slice(0, 10)
-      .forEach((event) => {
-      const homeScore = asNumber(event.intHomeScore, null);
-      const awayScore = asNumber(event.intAwayScore, null);
-
-      if (homeScore === null || awayScore === null) {
-        return;
-      }
-
-      const isHome = String(event.idHomeTeam) === String(teamId);
-      const goalsFor = isHome ? homeScore : awayScore;
-      const goalsAgainst = isHome ? awayScore : homeScore;
-
-      goalsForTotal += goalsFor;
-      counted += 1;
-
-      const row = normalizeMatchEvent(event, teamId);
-      if (row) {
-        quickRows.push(row);
-      }
-
-      if (goalsFor > goalsAgainst) {
-        points += 3;
-      } else if (goalsFor === goalsAgainst) {
-        points += 1;
-      }
-      });
-
-    const formEntries = buildFormEntries(quickRows, FORM_ICON_COUNT);
-
-    if (counted === 0) {
+    if (rows.length === 0) {
       return { formPoints: 14, avgGoals: 1.2, formEntries };
     }
 
+    const formPoints = formPointsFromEntries(formEntries);
+    const goalsTotal = rows.reduce((total, row) => total + asNumber(row.goalsFor, 0), 0);
+
     return {
-      formPoints: clamp(points, 0, 30),
-      avgGoals: clamp(goalsForTotal / counted, 0, 6),
+      formPoints: clamp(formPoints, 0, 30),
+      avgGoals: clamp(goalsTotal / rows.length, 0, 6),
       formEntries
     };
   }
@@ -897,8 +1040,8 @@ export default function App() {
     setApiStatus(`Loading recent stats for ${nextFields.teamA} and ${nextFields.teamB}...`);
 
     const [homeMetrics, awayMetrics] = await Promise.all([
-      getRecentTeamMetrics(fixture.idHomeTeam),
-      getRecentTeamMetrics(fixture.idAwayTeam)
+      getRecentTeamMetrics(fixture.idHomeTeam, fields.fdApiKey, fixture.strHomeTeam || ""),
+      getRecentTeamMetrics(fixture.idAwayTeam, fields.fdApiKey, fixture.strAwayTeam || "")
     ]);
 
     const updatedFields = {
@@ -922,35 +1065,42 @@ export default function App() {
     setFields(updatedFields);
     setActiveTeams(updatedActive);
     await refreshMatchHistory(updatedActive, updatedFields);
-    setApiStatus(`Loaded ${updatedFields.teamA} vs ${updatedFields.teamB} from TheSportsDB.`);
+    setApiStatus(`Loaded ${updatedFields.teamA} vs ${updatedFields.teamB} from football-data.org.`);
   }
 
   async function loadNationalFixtures() {
     const query = sanitizeNationalQuery(fields.nationQuery);
+    const apiKey = fields.fdApiKey.trim();
+
     if (!query) {
-      setApiStatus("Enter a national team name first (example: France, Brazil, Japan).");
+      setApiStatus("Enter a team or club name first (example: France, Arsenal, Bayern Munich).");
+      return;
+    }
+
+    if (!apiKey) {
+      setApiStatus("Enter your football-data.org API key first.");
       return;
     }
 
     try {
-      setApiStatus(`Searching national team data for ${query}...`);
-      const team = await findNationalTeam(query);
-      const payload = await fetchSportsDb(`/eventsnext.php?id=${encodeURIComponent(team.idTeam)}`);
-      const fixtures = payload.events || [];
+      setApiStatus(`Searching for ${query}...`);
+      const team = await findTeamFD(query, apiKey);
+      const payload = await fetchFD(
+        `/teams/${team.id}/matches?status=SCHEDULED&limit=10`,
+        apiKey
+      );
+      const fixtures = (payload.matches || []).map(normalizeFDFixture);
       setLoadedFixtures(fixtures);
       setSelectedFixture("0");
 
       if (fixtures.length === 0) {
-        setApiStatus(`No upcoming fixtures found for ${team.strTeam}. Try another team.`);
+        setApiStatus(`No upcoming fixtures for ${team.name || query}. Try another team.`);
         return;
       }
 
       await applyFixture(0, fixtures);
     } catch (error) {
-      setApiStatus(`Could not load API data: ${error.message}`);
-      if (String(error.message || "").toLowerCase().includes("network/cors")) {
-        setHistoryStatus("Tip: serve this page with a local server (example: python -m http.server 5173).");
-      }
+      setApiStatus(`Could not load fixtures: ${error.message}`);
     }
   }
 
@@ -1084,7 +1234,7 @@ export default function App() {
       <main className="page">
         <header className="hero">
           <p className="eyebrow">Experimental Match Intelligence</p>
-          <h1>Predict Your Next Clash</h1>
+          <h1>Predict Your Next Game</h1>
           <p className="subtitle">Blend form, scoring trends, and injuries into one fast match forecast.</p>
         </header>
 
@@ -1117,7 +1267,7 @@ export default function App() {
         <section className="panel input-panel" aria-label="Prediction input">
           <div className="api-grid">
             <div>
-              <label htmlFor="nationQuery">National Team</label>
+              <label htmlFor="nationQuery">Team or Club</label>
               <input
                 id="nationQuery"
                 type="text"
@@ -1163,25 +1313,6 @@ export default function App() {
             </div>
             <div>
               <p className="api-status">{apiStatus}</p>
-            </div>
-          </div>
-
-          <div className="api-grid api-grid-secondary">
-            <div>
-              <label htmlFor="oddsApiKey">The Odds API Key</label>
-              <input
-                id="oddsApiKey"
-                type="password"
-                value={fields.oddsApiKey}
-                onChange={(e) => updateField("oddsApiKey", e.target.value)}
-                placeholder="Paste your API key"
-              />
-              <small>Get one from the-odds-api.com</small>
-            </div>
-            <div className="api-action-wrap">
-              <button className="predict-btn" type="button" onClick={fetchOddsForCurrentFixture}>
-                Load Betting Odds
-              </button>
             </div>
           </div>
 
@@ -1307,13 +1438,14 @@ export default function App() {
 
         <section className="panel output-panel" aria-live="polite">
           <div className="result-top">
-            <h2>{prediction.fixtureTitle}</h2>
+            <h2>{prediction.fixtureLabel}</h2>
             <p>{prediction.winnerText}</p>
+            <small>{prediction.rankSummary}</small>
           </div>
 
           <div className="bars" role="img" aria-label="Win probability bars">
             <div className="bar-row">
-              <span>{prediction.teamA}</span>
+              <span>{formatTeamWithRank(prediction.teamA, teamRanks.home)}</span>
               <div className="bar-track">
                 <div className="bar fill-home" style={{ width: prediction.barA }}></div>
               </div>
@@ -1327,7 +1459,7 @@ export default function App() {
               <strong>{prediction.probD}%</strong>
             </div>
             <div className="bar-row">
-              <span>{prediction.teamB}</span>
+              <span>{formatTeamWithRank(prediction.teamB, teamRanks.away)}</span>
               <div className="bar-track">
                 <div className="bar fill-away" style={{ width: prediction.barB }}></div>
               </div>
@@ -1396,7 +1528,7 @@ export default function App() {
 
           <div className="history-grid">
             <article className="history-card">
-              <h3>Last 10: {fields.teamA}</h3>
+              <h3>Last 10: {formatTeamWithRank(fields.teamA, teamRanks.home)}</h3>
               <div className="history-list">
                 {history.home.length === 0 ? (
                   <p className="history-empty">No recent matches found.</p>
@@ -1414,7 +1546,7 @@ export default function App() {
             </article>
 
             <article className="history-card">
-              <h3>Last 10: {fields.teamB}</h3>
+              <h3>Last 10: {formatTeamWithRank(fields.teamB, teamRanks.away)}</h3>
               <div className="history-list">
                 {history.away.length === 0 ? (
                   <p className="history-empty">No recent matches found.</p>
@@ -1434,7 +1566,10 @@ export default function App() {
 
           <article className="history-card history-card-wide">
             <h3>
-              Head-to-Head: {fields.teamA} vs {fields.teamB}
+              Head-to-Head: {formatTeamWithRank(fields.teamA, teamRanks.home)} vs {formatTeamWithRank(
+                fields.teamB,
+                teamRanks.away
+              )}
             </h3>
             <div className="history-list">
               {history.h2h.length === 0 ? (

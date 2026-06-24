@@ -49,7 +49,7 @@ body {
   margin: 0;
   line-height: 0.95;
   letter-spacing: 0.02em;
-  font-size: clamp(2.2rem, 5vw, 4.4rem);
+  font-size: clamp(1.9rem, 4.4vw, 3.8rem);
   text-transform: uppercase;
 }
 
@@ -238,6 +238,7 @@ small {
   color: var(--text-muted);
 }
 
+<<<<<<< HEAD
 .games-list {
   margin-top: 16px;
   display: grid;
@@ -281,6 +282,27 @@ small {
   color: var(--text-muted);
 }
 
+=======
+.result-top small {
+  display: block;
+  margin-top: 6px;
+  color: #a8bbc5;
+}
+
+.team-rank-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.team-rank-label small {
+  margin: 0;
+  color: #a8bbc5;
+  font-weight: 700;
+}
+
+>>>>>>> e4074c48ff538f0c188096b0d7b6306707c1d2c4
 .bars {
   margin-top: 18px;
   display: grid;
