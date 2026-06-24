@@ -273,6 +273,26 @@ function formatDateLabel(value) {
   return `${day}.${month}.${year}`;
 }
 
+function formatDateTimeLabel(value) {
+  if (!value) {
+    return "Unknown";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  return date.toLocaleString([], {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+}
+
 function getTodayIsoDate() {
   const now = new Date();
   const year = now.getFullYear();
@@ -304,6 +324,35 @@ function getEventSortTimestamp(event) {
   const raw = event.strTimestamp || event.dateEvent || "";
   const parsed = new Date(raw);
   return Number.isNaN(parsed.getTime()) ? Number.MAX_SAFE_INTEGER : parsed.getTime();
+}
+
+function buildSummaryCommentary(prediction, fields, summary) {
+  const comments = [];
+  const winner = prediction.teamA === fields.teamA ? prediction.teamA : prediction.teamB;
+
+  comments.push(
+    `Model outlook: ${prediction.winnerText.replace("Most likely winner: ", "")} with ${prediction.probA}%/${prediction.probD}%/${prediction.probB}% on 1X2.`
+  );
+
+  if (fields.formA > fields.formB + 2) {
+    comments.push(`${fields.teamA} carries the stronger recent form profile, which supports a controlled game plan.`);
+  } else if (fields.formB > fields.formA + 2) {
+    comments.push(`${fields.teamB} has the better recent form trajectory and should be competitive over 90 minutes.`);
+  } else {
+    comments.push("Recent form is balanced, so game state swings and in-match adjustments are likely to decide the result.");
+  }
+
+  comments.push(
+    `Scoring profile: ${fields.teamA} ${Number(fields.goalsA).toFixed(1)} avg goals vs ${fields.teamB} ${Number(
+      fields.goalsB
+    ).toFixed(1)}; expected scoreline ${prediction.expectedResult}.`
+  );
+
+  if (summary.matchStatus && summary.matchStatus !== "Unknown") {
+    comments.push(`Match context: current status is ${summary.matchStatus}, with venue details sourced from the fixture API.`);
+  }
+
+  return comments;
 }
 
 function getOutcomeFromPerspective(goalsFor, goalsAgainst) {
@@ -597,7 +646,12 @@ function normalizeFDFixture(match) {
     strHomeTeam: match.homeTeam?.name || "TBD",
     strAwayTeam: match.awayTeam?.name || "TBD",
     idHomeTeam: String(match.homeTeam?.id || ""),
-    idAwayTeam: String(match.awayTeam?.id || "")
+    idAwayTeam: String(match.awayTeam?.id || ""),
+    source: "football-data",
+    competitionName: match.competition?.name || "",
+    venueName: match.venue || "",
+    areaName: match.area?.name || "",
+    status: match.status || ""
   };
 }
 
@@ -960,6 +1014,15 @@ export default function App() {
   const [history, setHistory] = useState({ home: [], away: [], h2h: [] });
   const [todaysGames, setTodaysGames] = useState([]);
   const [todaysGamesStatus, setTodaysGamesStatus] = useState("Loading today's soccer games...");
+  const [gameSummary, setGameSummary] = useState({
+    competition: "Unknown",
+    kickoff: "Unknown",
+    venue: "Unknown",
+    location: "Unknown",
+    matchStatus: "Unknown",
+    source: "None",
+    note: "Load a game to see detailed API summary and commentary."
+  });
   const [teamRanks, setTeamRanks] = useState({ home: null, away: null });
   const [activeTeams, setActiveTeams] = useState({
     homeId: null,
@@ -1055,6 +1118,69 @@ export default function App() {
       insights: buildInsights(values, { confidenceScore }, teamRanks)
     };
   }, [fields, teamRanks]);
+
+  const summaryCommentary = useMemo(
+    () => buildSummaryCommentary(prediction, fields, gameSummary),
+    [prediction, fields, gameSummary]
+  );
+
+  async function loadGameSummary(fixture, homeTeamName, awayTeamName) {
+    setGameSummary((prev) => ({ ...prev, note: "Loading game details from API..." }));
+
+    try {
+      if (fixture?.source === "sportsdb" && fixture.idEvent) {
+        const payload = await fetchSportsDb(`/lookupevent.php?id=${encodeURIComponent(fixture.idEvent)}`);
+        const event = Array.isArray(payload?.events) ? payload.events[0] : null;
+
+        setGameSummary({
+          competition: event?.strLeague || fixture.league || "Unknown",
+          kickoff: formatDateTimeLabel(event?.strTimestamp || event?.dateEvent || fixture.strTimestamp || fixture.dateEvent),
+          venue: event?.strVenue || "Unknown",
+          location: [event?.strCity, event?.strCountry].filter(Boolean).join(", ") || "Unknown",
+          matchStatus: event?.strStatus || fixture.status || "Scheduled",
+          source: "TheSportsDB",
+          note: `Detailed fixture context loaded for ${homeTeamName} vs ${awayTeamName}.`
+        });
+        return;
+      }
+
+      if (fixture?.idEvent && fields.fdApiKey.trim()) {
+        const payload = await fetchFD(`/matches/${encodeURIComponent(fixture.idEvent)}`, fields.fdApiKey.trim());
+        const match = payload?.match || null;
+
+        setGameSummary({
+          competition: match?.competition?.name || fixture.competitionName || "Unknown",
+          kickoff: formatDateTimeLabel(match?.utcDate || fixture.strTimestamp || fixture.dateEvent),
+          venue: match?.venue || fixture.venueName || "Unknown",
+          location: match?.area?.name || fixture.areaName || "Unknown",
+          matchStatus: match?.status || fixture.status || "Scheduled",
+          source: "football-data.org",
+          note: `Detailed fixture context loaded for ${homeTeamName} vs ${awayTeamName}.`
+        });
+        return;
+      }
+
+      setGameSummary({
+        competition: fixture?.competitionName || fixture?.league || "Unknown",
+        kickoff: formatDateTimeLabel(fixture?.strTimestamp || fixture?.dateEvent),
+        venue: fixture?.venueName || "Unknown",
+        location: fixture?.areaName || "Unknown",
+        matchStatus: fixture?.status || "Scheduled",
+        source: "Local fixture",
+        note: "Using available fixture fields while detailed endpoint is unavailable."
+      });
+    } catch (error) {
+      setGameSummary({
+        competition: fixture?.competitionName || fixture?.league || "Unknown",
+        kickoff: formatDateTimeLabel(fixture?.strTimestamp || fixture?.dateEvent),
+        venue: fixture?.venueName || "Unknown",
+        location: fixture?.areaName || "Unknown",
+        matchStatus: fixture?.status || "Unknown",
+        source: "Fallback",
+        note: `Could not load full game details: ${error.message}`
+      });
+    }
+  }
 
   async function refreshMatchHistory(nextActive = activeTeams, nextFields = fields) {
     const homeName = nextFields.teamA.trim() || nextActive.homeName;
@@ -1194,6 +1320,7 @@ export default function App() {
     setFields(updatedFields);
     setActiveTeams(updatedActive);
     await refreshMatchHistory(updatedActive, updatedFields);
+    await loadGameSummary(fixture, updatedFields.teamA, updatedFields.teamB);
     setApiStatus(`Loaded ${updatedFields.teamA} vs ${updatedFields.teamB} from football-data.org.`);
   }
 
@@ -1326,6 +1453,10 @@ export default function App() {
       const mapped = events
         .map((event, index) => ({
           id: event.idEvent || `today-${index}`,
+          idEvent: event.idEvent || "",
+          source: "sportsdb",
+          strTimestamp: event.strTimestamp || "",
+          dateEvent: event.dateEvent || "",
           kickoff: formatKickoffLabel(event),
           home: event.strHomeTeam || "Home",
           away: event.strAwayTeam || "Away",
@@ -1386,6 +1517,7 @@ export default function App() {
     setApiStatus(`Loaded ${game.home} vs ${game.away} from today's list.`);
 
     await refreshMatchHistory(nextActive, nextFields);
+    await loadGameSummary(game, game.home, game.away);
   }
 
   return (
@@ -1678,6 +1810,42 @@ export default function App() {
               <small>{prediction.expectedReason}</small>
             </article>
           </div>
+
+          <article className="summary-card">
+            <h3>Game Summary</h3>
+            <p className="summary-note">{gameSummary.note}</p>
+            <div className="summary-grid">
+              <div>
+                <span>Competition</span>
+                <strong>{gameSummary.competition}</strong>
+              </div>
+              <div>
+                <span>Kickoff</span>
+                <strong>{gameSummary.kickoff}</strong>
+              </div>
+              <div>
+                <span>Venue</span>
+                <strong>{gameSummary.venue}</strong>
+              </div>
+              <div>
+                <span>Location</span>
+                <strong>{gameSummary.location}</strong>
+              </div>
+              <div>
+                <span>Status</span>
+                <strong>{gameSummary.matchStatus}</strong>
+              </div>
+              <div>
+                <span>Source</span>
+                <strong>{gameSummary.source}</strong>
+              </div>
+            </div>
+            <ul className="summary-comments">
+              {summaryCommentary.map((comment) => (
+                <li key={comment}>{comment}</li>
+              ))}
+            </ul>
+          </article>
 
           <article className="insights">
             <h3>Key Drivers</h3>
