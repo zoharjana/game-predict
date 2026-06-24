@@ -832,6 +832,7 @@ export default function App() {
     meta: "Load a fixture and fetch betting odds."
   });
   const [history, setHistory] = useState({ home: [], away: [], h2h: [] });
+  const [teamRanks, setTeamRanks] = useState({ home: null, away: null });
   const [activeTeams, setActiveTeams] = useState({
     homeId: null,
     awayId: null,

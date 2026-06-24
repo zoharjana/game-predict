@@ -238,7 +238,6 @@ small {
   color: var(--text-muted);
 }
 
-<<<<<<< HEAD
 .games-list {
   margin-top: 16px;
   display: grid;
@@ -282,7 +281,6 @@ small {
   color: var(--text-muted);
 }
 
-=======
 .result-top small {
   display: block;
   margin-top: 6px;
@@ -302,7 +300,6 @@ small {
   font-weight: 700;
 }
 
->>>>>>> e4074c48ff538f0c188096b0d7b6306707c1d2c4
 .bars {
   margin-top: 18px;
   display: grid;
