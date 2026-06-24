@@ -276,6 +276,31 @@ small {
   text-align: right;
 }
 
+.games-load-btn {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text-main);
+  padding: 5px 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.games-load-btn:hover {
+  border-color: var(--accent);
+  background: rgba(247, 184, 1, 0.15);
+}
+
+.games-load-icon {
+  color: var(--accent);
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
 .games-empty {
   margin: 0;
   color: var(--text-muted);
@@ -514,6 +539,11 @@ small {
   .games-league,
   .games-status {
     grid-column: 2;
+  }
+
+  .games-load-btn {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .games-status {

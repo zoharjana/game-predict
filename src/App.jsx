@@ -1329,6 +1329,8 @@ export default function App() {
           kickoff: formatKickoffLabel(event),
           home: event.strHomeTeam || "Home",
           away: event.strAwayTeam || "Away",
+          homeTeamId: event.idHomeTeam || null,
+          awayTeamId: event.idAwayTeam || null,
           league: event.strLeague || event.strLeagueAlternate || "Unknown League",
           status: event.strStatus || "Scheduled",
           sortTs: getEventSortTimestamp(event)
@@ -1343,6 +1345,9 @@ export default function App() {
       }
 
       setTodaysGamesStatus(`${mapped.length} soccer games found for ${today}.`);
+
+      // Keep inputs in sync with today's list by loading the first game after each refresh.
+      await loadGameFromTodayList(mapped[0]);
     } catch (error) {
       setTodaysGames([]);
       setTodaysGamesStatus(`Could not load today's games: ${error.message}`);
@@ -1355,6 +1360,32 @@ export default function App() {
 
   function updateField(key, value) {
     setFields((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function loadGameFromTodayList(game) {
+    if (!game) {
+      return;
+    }
+
+    const nextFields = {
+      ...fields,
+      nationQuery: game.home,
+      teamA: game.home,
+      teamB: game.away
+    };
+
+    const nextActive = {
+      homeId: game.homeTeamId || null,
+      awayId: game.awayTeamId || null,
+      homeName: game.home,
+      awayName: game.away
+    };
+
+    setFields(nextFields);
+    setActiveTeams(nextActive);
+    setApiStatus(`Loaded ${game.home} vs ${game.away} from today's list.`);
+
+    await refreshMatchHistory(nextActive, nextFields);
   }
 
   return (
@@ -1382,7 +1413,16 @@ export default function App() {
                   <span className="games-time">{game.kickoff}</span>
                   <span className="games-fixture">{game.home} vs {game.away}</span>
                   <span className="games-league">{game.league}</span>
-                  <span className="games-status">{game.status}</span>
+                  {String(game.status).toUpperCase() === "NS" ? (
+                    <button className="games-load-btn" type="button" onClick={() => loadGameFromTodayList(game)}>
+                      <span className="games-load-icon" aria-hidden="true">
+                        ▶
+                      </span>
+                      Load
+                    </button>
+                  ) : (
+                    <span className="games-status">{game.status}</span>
+                  )}
                 </div>
               ))
             )}
