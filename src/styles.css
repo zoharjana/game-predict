@@ -238,6 +238,49 @@ small {
   color: var(--text-muted);
 }
 
+.games-list {
+  margin-top: 16px;
+  display: grid;
+  gap: 8px;
+}
+
+.games-row {
+  display: grid;
+  grid-template-columns: 70px 1fr minmax(120px, 220px) 70px;
+  gap: 10px;
+  align-items: center;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 9px 10px;
+}
+
+.games-time,
+.games-status {
+  font-weight: 700;
+}
+
+.games-time {
+  color: var(--accent);
+}
+
+.games-fixture {
+  font-size: 0.93rem;
+}
+
+.games-league {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.games-status {
+  text-align: right;
+}
+
+.games-empty {
+  margin: 0;
+  color: var(--text-muted);
+}
+
 .bars {
   margin-top: 18px;
   display: grid;
@@ -417,6 +460,10 @@ small {
   animation-delay: 100ms;
 }
 
+.games-panel {
+  animation-delay: 50ms;
+}
+
 @keyframes rise-in {
   from {
     opacity: 0;
@@ -439,6 +486,20 @@ small {
 
   .bar-row {
     grid-template-columns: 90px 1fr 50px;
+  }
+
+  .games-row {
+    grid-template-columns: 66px 1fr;
+  }
+
+  .games-league,
+  .games-status {
+    grid-column: 2;
+  }
+
+  .games-status {
+    text-align: left;
+    font-size: 0.8rem;
   }
 }
 

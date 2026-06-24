@@ -35,6 +35,22 @@ Preview production build:
 
 npm run preview
 
+Run today's games script in the terminal:
+
+npm run games:today
+
+Run live games script in the terminal:
+
+npm run games:live
+
+Optional environment variables for the script:
+
+- SPORTSDB_API_KEY: TheSportsDB API key (default: 3)
+- SPORTS_DATE: Override date in YYYY-MM-DD format (default: today local date)
+- SPORTS_LIST: Comma-separated sports to query (example: Soccer,Basketball)
+- MAX_SPORTS: Limit how many sports are queried (example: 8)
+- SPORTS_MODE: Script mode, `today` or `live` (default: `today`)
+
 ## Project Structure
 
 - src/main.jsx: React entry point

@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 5173"
+    "preview": "vite preview --host 0.0.0.0 --port 5173",
+    "games:today": "node scripts/todays-games.mjs",
+    "games:live": "node scripts/live-games.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

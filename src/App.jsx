@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import "./styles.css";
 
 const API_BASES = [
@@ -175,6 +175,39 @@ function formatDateLabel(value) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const year = String(date.getFullYear()).slice(-2);
   return `${day}.${month}.${year}`;
+}
+
+function getTodayIsoDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatKickoffLabel(event) {
+  if (event.strTime) {
+    return event.strTime;
+  }
+
+  if (event.strTimestamp) {
+    const kickoff = new Date(event.strTimestamp);
+    if (!Number.isNaN(kickoff.getTime())) {
+      return kickoff.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+      });
+    }
+  }
+
+  return "TBD";
+}
+
+function getEventSortTimestamp(event) {
+  const primary = event.strTimestamp || event.dateEvent;
+  const date = new Date(primary || "");
+  return Number.isNaN(date.getTime()) ? Number.MAX_SAFE_INTEGER : date.getTime();
 }
 
 function getOutcomeFromPerspective(goalsFor, goalsAgainst) {
@@ -645,6 +678,8 @@ export default function App() {
     meta: "Load a fixture and fetch betting odds."
   });
   const [history, setHistory] = useState({ home: [], away: [], h2h: [] });
+  const [todaysGames, setTodaysGames] = useState([]);
+  const [todaysGamesStatus, setTodaysGamesStatus] = useState("Loading today's soccer games...");
   const [activeTeams, setActiveTeams] = useState({
     homeId: null,
     awayId: null,
@@ -1001,6 +1036,44 @@ export default function App() {
     }
   }
 
+  async function loadTodaysGames() {
+    const today = getTodayIsoDate();
+    setTodaysGamesStatus(`Loading games for ${today}...`);
+
+    try {
+      const payload = await fetchSportsDb(`/eventsday.php?d=${encodeURIComponent(today)}&s=Soccer`);
+      const events = Array.isArray(payload.events) ? payload.events : [];
+
+      const mapped = events
+        .map((event, index) => ({
+          id: event.idEvent || `today-${index}`,
+          kickoff: formatKickoffLabel(event),
+          home: event.strHomeTeam || "Home",
+          away: event.strAwayTeam || "Away",
+          league: event.strLeague || event.strLeagueAlternate || "Unknown League",
+          status: event.strStatus || "Scheduled",
+          sortTs: getEventSortTimestamp(event)
+        }))
+        .sort((a, b) => a.sortTs - b.sortTs);
+
+      setTodaysGames(mapped);
+
+      if (mapped.length === 0) {
+        setTodaysGamesStatus(`No games found for ${today}.`);
+        return;
+      }
+
+      setTodaysGamesStatus(`${mapped.length} soccer games found for ${today}.`);
+    } catch (error) {
+      setTodaysGames([]);
+      setTodaysGamesStatus(`Could not load today's games: ${error.message}`);
+    }
+  }
+
+  useEffect(() => {
+    loadTodaysGames();
+  }, []);
+
   function updateField(key, value) {
     setFields((prev) => ({ ...prev, [key]: value }));
   }
@@ -1014,6 +1087,32 @@ export default function App() {
           <h1>Predict Your Next Clash</h1>
           <p className="subtitle">Blend form, scoring trends, and injuries into one fast match forecast.</p>
         </header>
+
+        <section className="panel games-panel" aria-live="polite" aria-label="Today's games list">
+          <div className="result-top">
+            <h2>Today's Soccer Games</h2>
+            <p>{todaysGamesStatus}</p>
+          </div>
+
+          <div className="games-list">
+            {todaysGames.length === 0 ? (
+              <p className="games-empty">No games to display right now.</p>
+            ) : (
+              todaysGames.map((game) => (
+                <div className="games-row" key={game.id}>
+                  <span className="games-time">{game.kickoff}</span>
+                  <span className="games-fixture">{game.home} vs {game.away}</span>
+                  <span className="games-league">{game.league}</span>
+                  <span className="games-status">{game.status}</span>
+                </div>
+              ))
+            )}
+          </div>
+
+          <button className="predict-btn" type="button" onClick={loadTodaysGames}>
+            Refresh Games
+          </button>
+        </section>
 
         <section className="panel input-panel" aria-label="Prediction input">
           <div className="api-grid">
