@@ -568,6 +568,99 @@ function normalizeFDFixture(match) {
   };
 }
 
+let fifaRankCache = null;
+
+function fifaRankStrength(rank) {
+  const parsed = Number(rank);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+
+  const safeRank = clamp(parsed, 1, 210);
+  return (211 - safeRank) / 210;
+}
+
+function formatFifaRank(rankInfo) {
+  if (!rankInfo || !Number.isFinite(Number(rankInfo.rank))) {
+    return "";
+  }
+
+  return `#${Number(rankInfo.rank)}`;
+}
+
+function formatTeamWithRank(teamName, rankInfo) {
+  const rankLabel = formatFifaRank(rankInfo);
+  return rankLabel ? `${teamName} (${rankLabel})` : teamName;
+}
+
+function normalizeRankRows(rows) {
+  return (rows || [])
+    .map((row) => {
+      const name = String(row.team || row.country || row.name || row.Team || row.Country || "").trim();
+      const rank = Number(row.rank || row.Rank || row.position || row.Position);
+
+      if (!name || !Number.isFinite(rank)) {
+        return null;
+      }
+
+      return {
+        name,
+        nameNorm: normalizeTeamName(name),
+        rank
+      };
+    })
+    .filter(Boolean);
+}
+
+async function fetchFifaRankLookup() {
+  if (Array.isArray(fifaRankCache)) {
+    return fifaRankCache;
+  }
+
+  // Keep rendering resilient: if remote rank feeds fail, the app continues without rank data.
+  const sources = [
+    "https://raw.githubusercontent.com/openfootball/world-cup.json/master/2018/worldcup.json"
+  ];
+
+  for (const source of sources) {
+    try {
+      const response = await fetch(source, { cache: "no-store" });
+      if (!response.ok) {
+        continue;
+      }
+
+      const payload = await response.json();
+
+      // This source does not carry FIFA ranks directly; keep for future extension.
+      // Returning [] still avoids runtime crashes and keeps rank features optional.
+      const rows = normalizeRankRows(payload?.ranks || []);
+      fifaRankCache = rows;
+      return rows;
+    } catch (_error) {
+      // Try next source.
+    }
+  }
+
+  fifaRankCache = [];
+  return fifaRankCache;
+}
+
+function findFifaRankForTeam(teamName, rankRows) {
+  const query = normalizeTeamName(teamName);
+  if (!query) {
+    return null;
+  }
+
+  const rows = Array.isArray(rankRows) ? rankRows : [];
+  const exact = rows.find((row) => row.nameNorm === query);
+  if (exact) {
+    return exact;
+  }
+
+  const partial = rows.find((row) => row.nameNorm.includes(query) || query.includes(row.nameNorm));
+  return partial || null;
+}
+
 // Competitions available on the free tier grouped by priority
 const FD_COMPETITION_GROUPS = [
   ["WC", "EC"],                     // national teams
