@@ -1321,7 +1321,7 @@ export default function App() {
     setActiveTeams(updatedActive);
     await refreshMatchHistory(updatedActive, updatedFields);
     await loadGameSummary(fixture, updatedFields.teamA, updatedFields.teamB);
-    setApiStatus(`Loaded ${updatedFields.teamA} vs ${updatedFields.teamB} from football-data.org.`);
+    setApiStatus("Fixture loaded from football-data.org.");
   }
 
   async function loadNationalFixtures() {
